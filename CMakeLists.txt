@@ -139,6 +139,11 @@ add_executable(CoopLauncher WIN32 tools/launcher/main.cpp)
 cdmp_strict(CoopLauncher)
 target_link_libraries(CoopLauncher PRIVATE winhttp shell32)
 
+# Why an enemy is (not) a zone enemy, from a sniffer recording.
+add_executable(cdmp_zone_probe tools/zone_probe/main.cpp)
+cdmp_strict(cdmp_zone_probe)
+target_link_libraries(cdmp_zone_probe PRIVATE cdmp_common)
+
 add_executable(cdmp_host tools/host/main.cpp)
 cdmp_strict(cdmp_host)
 

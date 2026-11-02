@@ -115,14 +115,19 @@ std::optional<Tail> parse_tail(std::span<const uint8_t> pl) {
 Origin origin(std::span<const uint8_t> load) {
     const auto t0 = find_t0(load);
     if (!t0) return {};
+    // Build 3479 has 4 more bytes before these fields than 2976 (there,
+    // schedule at 42, node at 390, sequence at 1043): the schedule hash read
+    // at 42 was a constant 0x13F80 for every bandit and the allowed hashes
+    // turned up at 46 (cdmp_zone_probe).
+    constexpr size_t d = 4;
     auto at = [&](size_t off) { return *t0 + off + 4 <= load.size() ? u32_at(load.data() + *t0 + off) : 0u; };
-    if (const uint32_t schedule = at(42)) return {OriginKind::Schedule, schedule, at(46)};
-    if (const uint32_t seq = at(1043); seq && (at(1047) & 0xF0000000u) == 0x20000000u) {
-        return {OriginKind::Sequence, seq, at(1047) & 0xFFFFu};
+    if (const uint32_t schedule = at(42 + d)) return {OriginKind::Schedule, schedule, at(46 + d)};
+    if (const uint32_t seq = at(1043 + d); seq && (at(1047 + d) & 0xF0000000u) == 0x20000000u) {
+        return {OriginKind::Sequence, seq, at(1047 + d) & 0xFFFFu};
     }
-    if (const uint32_t node = at(390); node && *t0 + 396 <= load.size()) {
+    if (const uint32_t node = at(390 + d); node && *t0 + 396 + d <= load.size()) {
         uint16_t slot;
-        std::memcpy(&slot, load.data() + *t0 + 394, 2);
+        std::memcpy(&slot, load.data() + *t0 + 394 + d, 2);
         return {OriginKind::FactionNode, node, slot};
     }
     return {OriginKind::None, 0, 0};

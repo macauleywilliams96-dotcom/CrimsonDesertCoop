@@ -920,9 +920,9 @@ std::vector<uint8_t> make_load(const LoadSpec& s) {
         putf(t0, 1.0f), putf(t0 + 4, 2.0f), putf(t0 + 8, 3.0f);  // its spawn point
         putf(t0 + 24, 1.0f);                                        // rotation w
         putf(t0 + 28, 1.0f), putf(t0 + 32, 1.0f), putf(t0 + 36, 1.0f);
-        if (s.origin == 'S') put32(t0 + 42, s.origin_id), put32(t0 + 46, 7);
-        if (s.origin == 'F') put32(t0 + 390, s.origin_id), v[t0 + 394] = 3;
-        if (s.origin == 'Q') put32(t0 + 1043, s.origin_id), put32(t0 + 1047, 0x20000005);
+        if (s.origin == 'S') put32(t0 + 46, s.origin_id), put32(t0 + 50, 7);
+        if (s.origin == 'F') put32(t0 + 394, s.origin_id), v[t0 + 398] = 3;
+        if (s.origin == 'Q') put32(t0 + 1047, s.origin_id), put32(t0 + 1051, 0x20000005);
     } else {
         v.resize(v.size() + 1200, 0x11);
     }
