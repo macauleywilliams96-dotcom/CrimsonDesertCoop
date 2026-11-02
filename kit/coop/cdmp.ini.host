@@ -15,6 +15,7 @@ language=en
 enabled=1
 record=1
 [coop]
+enemy_auto=1
 enabled=1
 delay_ms=200
 offset_m=0
@@ -31,4 +32,4 @@ player_hit_lethal=0
 time_sync=1
 suppress=0
 [dev]
-enemy_relay=0
+enemy_relay=1

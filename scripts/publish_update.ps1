@@ -2,7 +2,7 @@
 #
 #   .\scripts\publish_update.ps1 -Tag v0.2.1 -Notes "Time of day sync"
 #
-# Makes dist\cdmp-update.zip (cdmp.asi + winmm.dll; never cdmp.ini or the
+# Makes dist\cdmp-update.zip (cdmp.asi, winmm.dll, cdmp.release.ini; never cdmp.ini or the
 # launcher) and a GitHub release in $Repo with it. The release notes get
 # "game_pe=<timestamp>" from offsets.h: the launcher switches the mod off on
 # any other game build. Also refreshes dist\friend-first-install.zip.
@@ -43,6 +43,7 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item (Join-Path $bin 'cdmp.asi') $stage
 Copy-Item $loader (Join-Path $stage 'winmm.dll')
+Copy-Item (Join-Path $root 'kit\coop\cdmp.release.ini') $stage
 $zip = Join-Path $dist 'cdmp-update.zip'
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip

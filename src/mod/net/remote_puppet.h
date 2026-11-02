@@ -26,6 +26,8 @@ bool puppet_spawn(const proto::SpawnInfo& info);
 // Any thread. Queue its removal (with fade-out); false if there is none.
 bool puppet_remove();
 bool puppet_spawned();
+// Shows a copy the client hid (player, horse or enemy copy).
+void puppet_unhide(uint32_t key);
 // True while this game sits paused in a menu (its clock stopped).
 bool puppet_local_paused();
 // True once after the sender dismounted: without a real link to a horse the

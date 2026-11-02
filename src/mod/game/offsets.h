@@ -29,7 +29,10 @@ inline constexpr uintptr_t kClientClockBias = 0x71B6EF8;     // i64, set by Serv
 // hora-del-dia.md section 8). The server's copy is at 0x6A6D238.
 inline constexpr uintptr_t kFieldTimeClient = 0x6EA4998;
 inline constexpr uint16_t kOpSetFieldTimeReq = 2227;  // FieldTime(31) | u8 flag | u32 key
-inline constexpr uint16_t kOpSetFieldTimeAck = 2952;  // u32 key | FieldTime(31)
+inline constexpr uint16_t kOpSetFieldTimeAck = 2952;
+// Our client's weather, sent when it changes (hora-del-dia.md section 3): f32 rain,
+// snow, temperature (C), cloud?, fog?, wind? (24 bytes). Build 2976: 2560.
+inline constexpr uint16_t kOpSyncWeatherStateReq = 2689;  // u32 key | FieldTime(31)
 
 // vtables (RVAs), used to validate every hop of the chain.
 inline constexpr uintptr_t kVtClientActorManager = 0x593ECF0;

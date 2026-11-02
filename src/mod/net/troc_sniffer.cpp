@@ -197,6 +197,15 @@ void on_post_packet(safetyhook::Context& ctx) {
     const uint32_t packed = 0x80000000u | (static_cast<uint32_t>(flags) << 8) | channel;
     if (op < 4096) g_post_args[op].store(packed, std::memory_order_relaxed);
     g_post_args_any.store(packed, std::memory_order_relaxed);
+    // Our weather, readable in the log: compared between the two players to see
+    // whether the synced time of day lines it up too.
+    if (uint8_t w[5 + 24]; op == off::kOpSyncWeatherStateReq &&
+                           guarded_copy(w, reinterpret_cast<const void*>(ctx.r9), sizeof w)) {
+        float f[6];
+        std::memcpy(f, w + 5, sizeof f);
+        log::info("Weather: rain {:.2f} snow {:.2f} temp {:.1f} C | cloud {:.3f} fog {:.3f} wind {:.2f}", f[0], f[1],
+                  f[2], f[3], f[4], f[5]);
+    }
     if (op == kOpGameLoadingStartReq) {
         g_loading_start_ms.store(GetTickCount64(), std::memory_order_release);
         g_loading_done_ms.store(0, std::memory_order_release);

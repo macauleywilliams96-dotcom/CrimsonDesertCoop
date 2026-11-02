@@ -1882,6 +1882,12 @@ void enemy_tick() {
     load_waiting();
     enemy_kept_corpses_tick();
     const uint64_t t = now_ms();
+    // The client hides enemy copies like it hid the player's (build 3479).
+    static uint64_t unhide_due = 0;
+    if (t >= unhide_due) {
+        unhide_due = t + 250;
+        for (const auto& [copy, on] : g_copies) puppet_unhide(copy);
+    }
     for (auto it = g_report_due.begin(); it != g_report_due.end();) {
         if (t >= it->second) {
             report(it->first);

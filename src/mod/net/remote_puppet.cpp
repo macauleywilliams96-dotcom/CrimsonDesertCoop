@@ -1906,28 +1906,33 @@ bool poke_byte(uintptr_t at, uint8_t value) {
 // game keeps it at opacity 0 and does not draw it (PORTING-3479.md). Every
 // 250 ms, while a copy exists, any hide bits on it are cleared and the game's
 // own change handler (0x6E90A0) is run so the opacity reaches its meshes.
+// Clears a copy's hide flags (Status+0x3B8 | +0x3C0, set by the client for
+// actors it thinks it should not draw) and runs the hide handler.
+void puppet_unhide(uint32_t key) {
+    static std::atomic<uint64_t> cleared{0};
+    const auto actor = game::find_actor(key);
+    if (!actor) return;
+    uint64_t table = 0, status = 0, a = 0, b = 0;
+    game::safe_read(*actor + 0x68, &table, 8);
+    if (table) game::safe_read(table + 0x20, &status, 8);
+    if (!status || !game::safe_read(status + kStatus_HideA, &a, 8) || !game::safe_read(status + kStatus_HideB, &b, 8)) {
+        return;
+    }
+    if (!(a | b)) return;
+    for (int i = 0; i < 8; ++i) poke_byte(status + kStatus_HideA + i, 0), poke_byte(status + kStatus_HideB + i, 0);
+    const bool called = call_hide_changed(status, a | b, 0);
+    if (cleared++ < 40) {
+        log::info("Puppet: copy 0x{:08X} was hidden (Status+3B8 0x{:X} +3C0 0x{:X}); shown again ({})", key, a, b,
+                  called ? "handler run" : "handler FAULTED");
+    }
+}
+
 void keep_copies_visible() {
-    static uint64_t next = 0, cleared = 0;
+    static uint64_t next = 0;
     const uint64_t now = steady_ms();
     if (now < next || !puppet_spawned()) return;
     next = now + 250;
-    for (const uint32_t key : {kPuppetPlayer, kPuppetHorse}) {
-        const auto actor = game::find_actor(key);
-        if (!actor) continue;
-        uint64_t table = 0, status = 0, a = 0, b = 0;
-        game::safe_read(*actor + 0x68, &table, 8);
-        if (table) game::safe_read(table + 0x20, &status, 8);
-        if (!status || !game::safe_read(status + kStatus_HideA, &a, 8) || !game::safe_read(status + kStatus_HideB, &b, 8)) {
-            continue;
-        }
-        if (!(a | b)) continue;
-        for (int i = 0; i < 8; ++i) poke_byte(status + kStatus_HideA + i, 0), poke_byte(status + kStatus_HideB + i, 0);
-        const bool called = call_hide_changed(status, a | b, 0);
-        if (cleared++ < 20) {
-            log::info("Puppet: copy 0x{:08X} was hidden (Status+3B8 0x{:X} +3C0 0x{:X}); shown again ({})", key, a, b,
-                      called ? "handler run" : "handler FAULTED");
-        }
-    }
+    for (const uint32_t key : {kPuppetPlayer, kPuppetHorse}) puppet_unhide(key);
 }
 
 

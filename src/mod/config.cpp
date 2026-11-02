@@ -54,12 +54,23 @@ constexpr wchar_t kDefaultIni[] =
     L"; Sideways offset of the other player in metres (0 = exact position)\r\n"
     L"offset_m=0\r\n";
 
+// cdmp.release.ini, next to cdmp.ini, comes with each mod update (CoopLauncher)
+// and holds the feature switches of that release: a key it has wins over
+// cdmp.ini, which keeps each player's own settings (SteamID, name).
+std::wstring release_ini(const std::wstring& path) {
+    const auto slash = path.find_last_of(L"\\/");
+    return (slash == std::wstring::npos ? std::wstring() : path.substr(0, slash + 1)) + L"cdmp.release.ini";
+}
+
 std::wstring read_string(const std::wstring& path, const wchar_t* section, const wchar_t* key,
                          const std::string& fallback) {
     wchar_t buf[256];
     const std::wstring def(fallback.begin(), fallback.end());
     GetPrivateProfileStringW(section, key, def.c_str(), buf, 256, path.c_str());
-    return buf;
+    wchar_t rel[256];
+    const wchar_t kMissing[] = L"\x01";  // no such key in the release file
+    GetPrivateProfileStringW(section, key, kMissing, rel, 256, release_ini(path).c_str());
+    return std::wcscmp(rel, kMissing) != 0 ? rel : buf;
 }
 
 std::string narrow(const std::wstring& w) {
@@ -74,7 +85,8 @@ std::string narrow(const std::wstring& w) {
 
 uint32_t read_uint(const std::wstring& path, const wchar_t* section, const wchar_t* key,
                    uint32_t fallback) {
-    return GetPrivateProfileIntW(section, key, static_cast<INT>(fallback), path.c_str());
+    const UINT own = GetPrivateProfileIntW(section, key, static_cast<INT>(fallback), path.c_str());
+    return GetPrivateProfileIntW(section, key, static_cast<INT>(own), release_ini(path).c_str());
 }
 
 // A distance in metres, within +-50; anything else keeps the fallback.
