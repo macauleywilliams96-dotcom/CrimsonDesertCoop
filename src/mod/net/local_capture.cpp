@@ -81,6 +81,12 @@ uint32_t g_user_key = 0, g_player_key = 0, g_body_key = 0;
 // ActorLoadDataAck of kind 5, loaded once per session.
 Bytes g_horse;
 uint32_t g_horse_key = 0;
+// Every mount of ours seen loading (a player can own several). The receiver
+// knows only g_horse_key, so riding any of them is sent as riding that one:
+// otherwise it never saw us mount or dismount and our copy froze after
+// dismounting (live test, build 3479: the guest rode 0xB0100003, sent 0xB0100004).
+std::atomic<uint32_t> g_mounts[4]{};
+std::atomic<uint32_t> g_sent_horse_key{0};
 std::atomic<uint32_t> g_generation{0};
 uint32_t g_spawn_counter = 0;
 EventSink g_sink;
@@ -644,6 +650,11 @@ void capture_observe_s2c(const uint8_t* packet, size_t size) {
     std::lock_guard lock(g_mutex);
     if (keys::is_class(key, keys::kClassUser) && payload[0x0D] == off::kLoadKindMount) {
         g_horse_key = u32_at(payload, 0x0E);
+        g_sent_horse_key = g_horse_key;
+        for (auto& m : g_mounts) {
+            uint32_t empty = 0;
+            if (m == g_horse_key || m.compare_exchange_strong(empty, g_horse_key)) break;
+        }
         g_horse = std::move(payload);
         log::info("Capture: horse template (horse 0x{:08X}, {} bytes)", g_horse_key, g_horse.size());
         return;
@@ -745,6 +756,19 @@ void capture_observe_c2s(const uint8_t* packet, size_t size) {
         if (parent == g_own_horse) {
             g_ridden_until_ms = steady_ms() + 200;
             std::memcpy(g_horse_sent_pos, payload.data() + off::kMvParentPos, sizeof g_horse_sent_pos);
+        }
+    }
+    if (kind == proto::EventKind::Move) {
+        uint32_t parent = 0;
+        std::memcpy(&parent, payload.data() + off::kMvParent, 4);
+        const uint32_t sent_horse = g_sent_horse_key;
+        if (parent && sent_horse && parent != sent_horse) {
+            for (const auto& m : g_mounts) {
+                if (m == parent) {
+                    std::memcpy(payload.data() + off::kMvParent, &sent_horse, 4);
+                    break;
+                }
+            }
         }
     }
     if (kind == proto::EventKind::Move) {
