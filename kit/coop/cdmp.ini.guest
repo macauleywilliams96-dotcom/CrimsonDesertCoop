@@ -1,0 +1,34 @@
+; Crimson Desert co-op (guest). Put the OTHER player's SteamID64 in [steam] peer_steamid.
+[general]
+player_name=Guest
+[net]
+enabled=1
+transport=steam
+role=guest
+send_rate_hz=20
+[steam]
+peer_steamid=
+[overlay]
+enabled=1
+language=en
+[sniffer]
+enabled=1
+record=1
+[coop]
+enabled=1
+delay_ms=200
+offset_m=0
+equip=1
+; horse copy is not working on build 3479 yet
+horse=0
+damage=0
+map_pin=1
+enemies_target_copy=0
+guest_hits=0
+guest_hit_stagger=0
+player_hit_react=0
+player_hit_lethal=0
+time_sync=2
+suppress=0
+[dev]
+enemy_relay=0

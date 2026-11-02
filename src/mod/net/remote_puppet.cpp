@@ -15,6 +15,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <tuple>
 
 #include <safetyhook.hpp>
@@ -24,6 +25,7 @@
 #include "mod/game/actor_lookup.h"
 #include "mod/game/game_clock.h"
 #include "mod/game/offsets.h"
+#include "mod/game/rtti.h"
 #include "mod/game/safe_memory.h"
 #include "mod/log.h"
 #include "mod/net/enemy_relay.h"
@@ -45,8 +47,9 @@ constexpr uint32_t kPuppetBody = 0xB010F001;
 // sender's party list inside the horse packet.
 constexpr uint32_t kPuppetHorse = 0xB010F002;
 constexpr uint32_t kPuppetHorseParty = 0xB010F003;
-// Slots of a user's child container that hold its mounts (2 = horse, 3 = other mounts).
-constexpr uint8_t kFirstMountSlot = 2, kLastMountSlot = 7;
+// Slots of a user's child container that hold its mounts (2976: 2 = horse, 3 = other
+// mounts; 3479: the horse is in slot 1; slot 0 is the player).
+constexpr uint8_t kFirstMountSlot = 1, kLastMountSlot = 7;
 
 // The character number in the player's load packets (user +0x17/+0x43, body
 // +0x1839/+0x1865). The client keeps ONE equipment-list cache keyed by it and
@@ -339,6 +342,27 @@ void clear_parent(Bytes& ack, size_t off) {
     std::memset(ack.data() + off, 0xFF, 8);
 }
 
+// While the sender is attached to something (a wall or ledge it climbs:
+// parent = that world object; 3479 capture: 220 of 6,491 Moves), MoveData's
+// local Transform is an offset from it. The copy cannot be attached to the
+// sender's object, and with the parent cleared that offset was taken as a
+// world position near the origin: the copy vanished while climbing. Use the
+// world Transform instead. `shift` is where MoveData's MoveActor-relative
+// offsets start in `v` (0 for a Move, sa_md(0) + 1 for an Ack of
+// StartAction).
+void detach_to_world(Bytes& v, size_t shift) {
+    const size_t parent_at = shift + off::kMvParent;
+    if (parent_at + 8 > v.size() || shift + off::kMvPos + 12 > v.size()) return;
+    uint64_t parent = 0;
+    std::memcpy(&parent, v.data() + parent_at, 8);
+    if (parent == ~uint64_t{0}) return;
+    if (static_cast<uint32_t>(parent) == kPuppetHorse && g_horse_enabled) return;
+    static constexpr float kIdentity[10] = {0, 0, 0, 0, 0, 0, 1, 1, 1, 1};
+    std::memmove(v.data() + shift + off::kMvLocalPos, v.data() + shift + off::kMvPos, 12);
+    std::memmove(v.data() + shift + off::kMvLocalRot, v.data() + shift + off::kMvRot, 16);
+    std::memcpy(v.data() + shift + off::kMvParentPos, kIdentity, sizeof kIdentity);
+}
+
 // A field that may name another actor (mirror-ack-formats.md): an actor of the
 // sender's world, unknown or different here, never one of ours (security
 // review H6).
@@ -419,53 +443,75 @@ void rebase_timestamp(Bytes& ack, size_t off) {
     std::memcpy(ack.data() + off, &ts, 8);
 }
 
-// MoveActor: 514 -> 235. Ack = req[0:0xDE] + u8 0 ("also send to controller",
-// read and ignored by the client) + req[0xDE:0xEA]; the Req's trailing
-// 10 x 28-byte history array is not part of the Ack.
+// A still, unparented Move for `key` at pos/rot, built on a real Move: both
+// position copies set, no parent, the parent Transform as on foot (identity).
+void place_still(Bytes& m, uint32_t key, const float pos[3], const float rot[4]) {
+    static constexpr float kOne[3] = {1.0f, 1.0f, 1.0f};
+    static constexpr float kIdentity[10] = {0, 0, 0, 0, 0, 0, 1, 1, 1, 1};
+    std::memcpy(m.data() + 0x00, &key, 4);
+    std::memcpy(m.data() + off::kMvPos, pos, 12);
+    std::memcpy(m.data() + off::kMvRot, rot, 16);
+    std::memcpy(m.data() + off::kMvLocalScale, kOne, sizeof kOne);
+    std::memcpy(m.data() + off::kMvLocalPos, pos, 12);
+    std::memcpy(m.data() + off::kMvLocalRot, rot, 16);
+    std::memset(m.data() + off::kMvParent, 0xFF, 8);
+    std::memcpy(m.data() + off::kMvParentPos, kIdentity, sizeof kIdentity);
+    std::memset(m.data() + off::kMvKeyField, 0, 4);
+}
+
+// MoveActor: 518 -> 239. Ack = req[0:end of MoveData] + u8 0 ("also send to
+// controller", read and ignored by the client) + the 12-byte tail; the Req's
+// trailing 10 x 28-byte history array is not part of the Ack.
 std::optional<Bytes> move_ack(const Bytes& req) {
-    if (req.size() != 514) return std::nullopt;
-    if (!sane_pos(req, 0x04) || !sane_quat(req, 0x10) || !sane_pos(req, 0x4C) || !finite_at(req, 0x58, 4) ||
-        !finite_at(req, 0x94, 7)) {
+    if (req.size() != off::kMvReqSize) return std::nullopt;
+    if (!sane_pos(req, off::kMvPos) || !sane_quat(req, off::kMvRot) || !sane_pos(req, off::kMvLocalPos) ||
+        !finite_at(req, off::kMvLocalRot, 4) || !finite_at(req, off::kMvParentPos, 7)) {
         return std::nullopt;
     }
-    std::memcpy(g_ref_pos, req.data() + 0x04, sizeof g_ref_pos);
-    Bytes ack = slice(req, 0, 0xDE);
+    std::memcpy(g_ref_pos, req.data() + off::kMvPos, sizeof g_ref_pos);
+    Bytes ack = slice(req, 0, off::kMvAckSplit);
+    detach_to_world(ack, 0);
     ack.push_back(0);
-    append(ack, slice(req, 0xDE, 0xEA));
-    shift_x(ack, 0x04);
-    shift_x(ack, 0x4C);
-    clear_parent(ack, 0x8C);
-    scrub_key(ack, 0x20);
-    rebase_timestamp(ack, 0xD5);  // advances 25 ms per packet in captura-2
+    append(ack, slice(req, off::kMvAckSplit, off::kMvWireSize));
+    shift_x(ack, off::kMvPos);
+    shift_x(ack, off::kMvLocalPos);
+    clear_parent(ack, off::kMvParent);
+    scrub_key(ack, off::kMvKeyField);
+    rebase_timestamp(ack, off::kMvTs);  // advances 25 ms per packet in captura-2
     return ack;
 }
 
-// StartAction: 725 -> 725, same bytes but the Req's last u8 (a "force" flag)
-// moves to 0x8E, before the big block.
+// StartAction: 729 -> 729, same bytes but the Req's last u8 (a "force" flag)
+// moves to 0x8E, before the big block (MoveData first).
 std::optional<Bytes> start_action_ack(const Bytes& req) {
-    if (req.size() != 725 || !finite_at(req, 0x8E, 7) || !finite_at(req, 0xD6, 3)) return std::nullopt;
-    Bytes ack = slice(req, 0, 0x8E);
-    ack.push_back(req[0x2D4]);
-    append(ack, slice(req, 0x8E, 0x2D4));
-    clear_parent(ack, 0x117);
-    scrub_key(ack, 0xAB);
-    scrub_key(ack, 0x169);
-    // Action target (Req +0x16C, Ack +0x16D): 0 almost always; when it names
-    // another actor (an enemy, a grabbed animal) it is one of the SENDER's
-    // world, which here may be a different actor (interacciones-mundo.md R3).
-    if (ack.size() >= 0x171) {
-        uint32_t target;
-        std::memcpy(&target, ack.data() + 0x16D, 4);
-        if (is_actor_key(target) && !is_puppet_key(target)) std::memset(ack.data() + 0x16D, 0, 4);
+    if (req.size() != off::kSaReqSize || !finite_at(req, off::sa_md(off::kMvPos), 7) ||
+        !finite_at(req, off::sa_md(off::kMvLocalPos), 3)) {
+        return std::nullopt;
     }
-    // World positions found in captura-2 at Req 0x8E (393/400 packets) and
-    // 0xD6 (247/400); they sit one byte later in the Ack. Unshifted, they
-    // snapped the puppet onto the sender every ~0.5 s.
-    shift_x_if_near_sender(ack, 0x8F);
-    shift_x_if_near_sender(ack, 0xD7);
+    Bytes ack = slice(req, 0, off::kSaMoveData);
+    ack.push_back(req[off::kSaFlag]);
+    append(ack, slice(req, off::kSaMoveData, off::kSaFlag));
+    // In the Ack every field of the big block sits one byte later.
+    detach_to_world(ack, off::sa_md(0) + 1);
+    clear_parent(ack, off::sa_md(off::kMvParent) + 1);
+    scrub_key(ack, off::sa_md(off::kMvKeyField) + 1);
+    scrub_key(ack, off::kSaAfterMd + 1);
+    // Action target (the second u32 after MoveData): 0 almost always; when it
+    // names another actor (an enemy, a grabbed animal) it is one of the
+    // SENDER's world, which here may be a different actor (interacciones-mundo.md R3).
+    const size_t target_at = off::kSaAfterMd + 4 + 1;
+    if (ack.size() >= target_at + 4) {
+        uint32_t target;
+        std::memcpy(&target, ack.data() + target_at, 4);
+        if (is_actor_key(target) && !is_puppet_key(target)) std::memset(ack.data() + target_at, 0, 4);
+    }
+    // World positions found in captura-2 at the MoveData position and its
+    // local copy; unshifted, they snapped the puppet onto the sender every ~0.5 s.
+    shift_x_if_near_sender(ack, off::sa_md(off::kMvPos) + 1);
+    shift_x_if_near_sender(ack, off::sa_md(off::kMvLocalPos) + 1);
     // StartAction feeds the same position buffer as MoveActor; its u64
-    // timestamp (Ack+0x160) needs the same rebase (movimiento-remoto-cliente.md).
-    rebase_timestamp(ack, 0x160);
+    // timestamp needs the same rebase (movimiento-remoto-cliente.md).
+    rebase_timestamp(ack, off::sa_md(off::kMvTs) + 1);
     return ack;
 }
 
@@ -482,17 +528,32 @@ std::optional<Bytes> rotate_ack(const Bytes& req) {
     return ack;
 }
 
-// UpdateWallUpData: Ack = Req (132 bytes, no extra byte). Points (not
+// UpdateWallUpData: Ack = Req (135 bytes, no extra byte). Points (not
 // directions) follow the puppet's sideways offset.
 std::optional<Bytes> wallup_ack(const Bytes& req) {
-    if (req.size() != 132) return std::nullopt;
-    for (size_t at : {size_t{0x09}, size_t{0x15}, size_t{0x21}, size_t{0x2D}, size_t{0x39}, size_t{0x45},
-                      size_t{0x5C}}) {
-        if (!finite_at(req, at, 3)) return std::nullopt;
+    static int logged = 0;
+    // 3479: 135 bytes (the vault-over block gained a u32 and lost a flag);
+    // positions at +0x09/+0x15/+0x21 (climb path), +0x2D/+0x39/+0x45 (vault
+    // path) and +0x5F (support point; 2976 +0x5C).
+    if (req.size() != 135) {
+        if (logged++ < 10) log::warn("Puppet: climb-up path dropped: {} bytes, expected 135", req.size());
+        return std::nullopt;
     }
+    for (size_t at : {size_t{0x09}, size_t{0x15}, size_t{0x21}, size_t{0x2D}, size_t{0x39}, size_t{0x45},
+                      size_t{0x5F}}) {
+        if (!finite_at(req, at, 3)) {
+            float v[3] = {};
+            std::memcpy(v, req.data() + at, sizeof v);
+            if (logged++ < 10) {
+                log::warn("Puppet: climb-up path dropped: field +0x{:X} not finite ({} {} {})", at, v[0], v[1], v[2]);
+            }
+            return std::nullopt;
+        }
+    }
+    if (logged++ < 10) log::info("Puppet: climb-up path accepted for the copy");
     Bytes ack = req;
     for (size_t at : {size_t{0x09}, size_t{0x15}, size_t{0x21}, size_t{0x2D}, size_t{0x39},
-                      size_t{0x45}, size_t{0x5C}}) {
+                      size_t{0x45}, size_t{0x5F}}) {
         shift_x(ack, at);
     }
     return ack;
@@ -591,7 +652,7 @@ std::atomic<float> g_end_gap_copy{-1.0f}, g_end_gap_ours{-1.0f};  // |B - target
 bool g_rope_lookup_faulted = false;
 // ReleaseRemoteCatchResultAck: u32 catcher | u8 slot | u8 reason (reader
 // 0xB5BD60 -> 0x5A7A10; the game's own releases use reason 2).
-constexpr uint16_t kOpReleaseRemoteCatchResultAck = 2471;
+constexpr uint16_t kOpReleaseRemoteCatchResultAck = 2464;
 constexpr uint8_t kReleaseReason = 2;
 
 std::string scene_text(const SceneId& id) {
@@ -719,13 +780,13 @@ void fill_gap_before(const Bytes& next, uint64_t delay) {
     if (g_gap_ref_stale.exchange(false)) return;  // reloaded since that Move (5 Oct: 1-7 m jumps)
     if (g_last_move.empty()) return;
     uint64_t ts_next = 0;
-    std::memcpy(&ts_next, next.data() + 0xD5, 8);
+    std::memcpy(&ts_next, next.data() + off::kMvTs, 8);
     if (ts_next <= g_last_move_ts) return;
     const uint64_t gap = ts_next - g_last_move_ts;
     if (gap < kGapMinMs || gap > kGapMaxMs) return;
     float a[3], b[3];
-    std::memcpy(a, g_last_move.data() + 0x04, sizeof a);
-    std::memcpy(b, next.data() + 0x04, sizeof b);
+    std::memcpy(a, g_last_move.data() + off::kMvPos, sizeof a);
+    std::memcpy(b, next.data() + off::kMvPos, sizeof b);
     const float dx = b[0] - a[0], dy = b[1] - a[1], dz = b[2] - a[2];
     const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
     if (dist < kGapMinJump || dist > kGapMaxJump) return;
@@ -762,17 +823,17 @@ void fill_gap_before(const Bytes& next, uint64_t delay) {
     AcquireSRWLockExclusive(&g_queue_lock);
     for (Pending& item : g_queue) {
         Bytes& pk = item.packet;
-        if (!item.movement || pk.size() != 5 + 725) continue;
+        if (!item.movement || pk.size() != 5 + off::kSaReqSize) continue;
         uint16_t op;
         std::memcpy(&op, pk.data(), 2);
         if (op != off::kOpStartActionAck) continue;
         uint64_t ts;
-        std::memcpy(&ts, pk.data() + 5 + 0x160, 8);
+        std::memcpy(&ts, pk.data() + 5 + off::sa_md(off::kMvTs) + 1, 8);
         if (ts < win_lo || ts > win_hi) continue;
         float p[3];
         path_at(std::min(1.0f, static_cast<float>(ts - win_lo) / static_cast<float>(gap)), p);
         p[0] += g_offset_x;
-        for (size_t at : {size_t{0x8F}, size_t{0xD7}}) {
+        for (size_t at : {off::sa_md(off::kMvPos) + 1, off::sa_md(off::kMvLocalPos) + 1}) {
             float v[3];
             std::memcpy(v, pk.data() + 5 + at, sizeof v);
             const float ex = v[0] - (a[0] + g_offset_x), ey = v[1] - a[1], ez = v[2] - a[2];
@@ -794,10 +855,10 @@ void fill_gap_before(const Bytes& next, uint64_t delay) {
         float p[3];
         path_at(f, p);
         Bytes req = g_last_move;
-        std::memcpy(req.data() + 0x04, p, sizeof p);
-        std::memcpy(req.data() + 0x4C, p, sizeof p);
+        std::memcpy(req.data() + off::kMvPos, p, sizeof p);
+        std::memcpy(req.data() + off::kMvLocalPos, p, sizeof p);
         const uint64_t ts = g_last_move_ts + k * kGapStepMs;
-        std::memcpy(req.data() + 0xD5, &ts, 8);
+        std::memcpy(req.data() + off::kMvTs, &ts, 8);
         auto ack = move_ack(req);
         if (!ack) return;
         // Due when the original sample would have been: received at the time
@@ -913,6 +974,18 @@ void action_layers_advance(safetyhook::Context& ctx) {
     ctx.rip = reinterpret_cast<uintptr_t>(g_ret_stub);  // return at once
 }
 
+// Layer with no playback: take the game's own skip instead of reading null.
+SafetyHookMid g_playback_guard_hook;
+std::atomic<uint64_t> g_playback_skipped{0};
+uintptr_t g_playback_skip_to = 0;
+
+void layer_playback_read(safetyhook::Context& ctx) {
+    uintptr_t playback = 0;
+    if (ctx.rax && game::safe_read(ctx.rax + 0x10, &playback, sizeof playback) && playback) return;
+    g_playback_skipped.fetch_add(1, std::memory_order_relaxed);
+    ctx.rip = g_playback_skip_to;
+}
+
 SafetyHookInline g_ride_on_hook;
 SafetyHookInline g_ride_off_hook;
 std::atomic<uint64_t> g_ride_forced{0};
@@ -958,6 +1031,8 @@ uint8_t point_climb_enter(void* method, uint8_t same_method) {
 bool spawn_horse(const proto::SpawnInfo& info, uint64_t now) {
     Bytes horse = info.horse;
     if (horse.size() < 0x40 || !keys::is_class(info.horse_key, keys::kClassWorld) || is_puppet_key(info.horse_key)) {
+        log::warn("Puppet: horse 0x{:08X} rejected ({} bytes, world class {}, puppet {})", info.horse_key,
+                  horse.size(), keys::is_class(info.horse_key, keys::kClassWorld), is_puppet_key(info.horse_key));
         return false;
     }
     replace_u32(horse, info.user_key, kPuppetUser);
@@ -1153,7 +1228,10 @@ bool puppet_spawn(const proto::SpawnInfo& info) {
     }
     if (reuse) {
         log::info("Puppet: rider reloaded next to the horse copy that stayed");
-    } else if (g_horse_enabled && !info.horse.empty() && info.horse_key && spawn_horse(info, now)) {
+    } else if (!g_horse_enabled || info.horse.empty() || !info.horse_key) {
+        log::info("Puppet: no horse copy (enabled {}, template {} bytes, key 0x{:08X})", static_cast<bool>(g_horse_enabled),
+                  info.horse.size(), info.horse_key);
+    } else if (spawn_horse(info, now)) {
         std::lock_guard lock(g_mutex);
         g_horse_spawned = true;
         g_src_horse_key = info.horse_key;
@@ -1296,10 +1374,12 @@ bool puppet_spawn_enemy(uint32_t copy_key, std::vector<uint8_t> load, std::vecto
         if (const uint64_t est = capture_game_clock_ms()) game_now = est;  // the estimate (clock read off)
     }
     int with_action = 0;
-    for (size_t at = 0; at + 725 <= action_req.size(); at += 725) {
-        const Bytes one(action_req.begin() + at, action_req.begin() + at + 725);
+    for (size_t at = 0; at + off::kSaReqSize <= action_req.size(); at += off::kSaReqSize) {
+        const Bytes one(action_req.begin() + at, action_req.begin() + at + off::kSaReqSize);
         if (auto ack = start_action_ack(one)) {
-            if (game_now && ack->size() >= 0x168) std::memcpy(ack->data() + 0x160, &*game_now, 8);
+            if (const size_t ts_at = off::sa_md(off::kMvTs) + 1; game_now && ack->size() >= ts_at + 8) {
+                std::memcpy(ack->data() + ts_at, &*game_now, 8);
+            }
             enqueue_at(make_packet(off::kOpStartActionAck, *ack), now, /*movement=*/false);
             ++with_action;
         }
@@ -1308,18 +1388,9 @@ bool puppet_spawn_enemy(uint32_t copy_key, std::vector<uint8_t> load, std::vecto
     // without one the first copies loaded but never showed (live test). One
     // still sample where it stands, built on the other player's last Move.
     bool with_move = false;
-    if (g_last_move.size() == 514 && std::isfinite(orig[0])) {
+    if (g_last_move.size() == off::kMvReqSize && std::isfinite(orig[0])) {
         Bytes m = g_last_move;
-        std::memcpy(m.data() + 0x00, &copy_key, 4);
-        std::memcpy(m.data() + 0x04, orig, 12);
-        std::memcpy(m.data() + 0x10, rot, 16);
-        std::memset(m.data() + 0x20, 0, 4);
-        std::memcpy(m.data() + 0x4C, orig, 12);  // Path.local = world, no parent
-        std::memcpy(m.data() + 0x58, rot, 16);
-        const float one[3] = {1.0f, 1.0f, 1.0f};
-        std::memcpy(m.data() + 0x68, one, sizeof one);
-        std::memset(m.data() + 0x8C, 0xFF, 8);
-        std::memset(m.data() + 0x94, 0, 0x40);
+        place_still(m, copy_key, orig, rot);
         float ref[3];
         std::memcpy(ref, g_ref_pos, sizeof ref);  // the sender's reference stays
         auto ack = move_ack(m);
@@ -1342,21 +1413,12 @@ std::map<uint32_t, std::array<float, 3>> g_enemy_pos;
 
 void puppet_enemy_move(uint32_t copy_key, uint64_t ts, const proto::Vec3& pos, const proto::Quat& rot,
                        int64_t ts_shift_ms, uint64_t delay_ms) {
-    if (g_last_move.size() != 514) return;
+    if (g_last_move.size() != off::kMvReqSize) return;
     Bytes m = g_last_move;
     const float p[3] = {pos.x, pos.y, pos.z};
     const float q[4] = {rot.x, rot.y, rot.z, rot.w};
-    std::memcpy(m.data() + 0x00, &copy_key, 4);
-    std::memcpy(m.data() + 0x04, p, sizeof p);
-    std::memcpy(m.data() + 0x10, q, sizeof q);
-    std::memset(m.data() + 0x20, 0, 4);
-    std::memcpy(m.data() + 0x4C, p, sizeof p);  // Path.local = world, no parent
-    std::memcpy(m.data() + 0x58, q, sizeof q);
-    const float one[3] = {1.0f, 1.0f, 1.0f};
-    std::memcpy(m.data() + 0x68, one, sizeof one);
-    std::memset(m.data() + 0x8C, 0xFF, 8);
-    std::memset(m.data() + 0x94, 0, 0x40);
-    std::memcpy(m.data() + 0xD5, &ts, 8);
+    place_still(m, copy_key, p, q);
+    std::memcpy(m.data() + off::kMvTs, &ts, 8);
     g_enemy_pos[copy_key] = {p[0], p[1], p[2]};
     float ref[3];
     std::memcpy(ref, g_ref_pos, sizeof ref);
@@ -1470,18 +1532,10 @@ uint64_t g_horse_ridden_until = 0;
 void ride_horse(const Bytes& rider_req, uint64_t now, uint64_t delay_ms) {
     if (!g_horse_spawned) return;
     Bytes h = rider_req;
-    std::memcpy(h.data() + 0x00, &kPuppetHorse, 4);
-    std::memcpy(h.data() + 0x04, rider_req.data() + 0x94, 12);  // horse position
-    std::memcpy(h.data() + 0x10, rider_req.data() + 0xA0, 16);  // horse rotation
-    std::memset(h.data() + 0x20, 0, 4);
-    std::memcpy(h.data() + 0x4C, rider_req.data() + 0x94, 12);  // Path.local = world, no parent
-    std::memcpy(h.data() + 0x58, rider_req.data() + 0xA0, 16);
-    const float one[3] = {1.0f, 1.0f, 1.0f};
-    std::memcpy(h.data() + 0x68, one, sizeof one);
-    std::memset(h.data() + 0x8C, 0xFF, 8);
-    std::memset(h.data() + 0x94, 0, 0x40);
-    float hp[3];
-    std::memcpy(hp, h.data() + 0x04, sizeof hp);
+    float hp[3], hq[4];
+    std::memcpy(hp, rider_req.data() + off::kMvParentPos, sizeof hp);  // horse position
+    std::memcpy(hq, rider_req.data() + off::kMvParentRot, sizeof hq);  // horse rotation
+    place_still(h, kPuppetHorse, hp, hq);
     if (!std::isfinite(hp[0]) || (hp[0] == 0.0f && hp[2] == 0.0f)) return;
     float ref[3];
     std::memcpy(ref, g_ref_pos, sizeof ref);  // keep the rider's reference position
@@ -1561,7 +1615,7 @@ void puppet_event(const proto::GameEvent& ev, int64_t ts_shift_ms, uint64_t dela
     const uint32_t src = g_src_player_key;
     Bytes payload = ev.payload;
     // Moves arrive without their unused trailing history (local_capture emit).
-    if (ev.kind == proto::EventKind::Move && payload.size() == 0xEA) payload.resize(514, 0);
+    if (ev.kind == proto::EventKind::Move && payload.size() == off::kMvWireSize) payload.resize(off::kMvReqSize, 0);
     // The actor key leads every payload, after a fragment marker byte in
     // OtherEquipItemAck.
     const size_t key_at = ev.kind == proto::EventKind::Equip   ? 1
@@ -1602,21 +1656,21 @@ void puppet_event(const proto::GameEvent& ev, int64_t ts_shift_ms, uint64_t dela
     std::optional<Bytes> ack;
     switch (ev.kind) {
         case proto::EventKind::Move:
-            if (payload.size() != 514) return;
+            if (payload.size() != off::kMvReqSize) return;
             fill_gap_before(payload, move_hold);
             g_last_move = payload;
             g_last_move_ms = now;
-            std::memcpy(&g_last_move_ts, payload.data() + 0xD5, 8);
-            std::memcpy(g_last_move_pos, payload.data() + 0x04, sizeof g_last_move_pos);
+            std::memcpy(&g_last_move_ts, payload.data() + off::kMvTs, 8);
+            std::memcpy(g_last_move_pos, payload.data() + off::kMvPos, sizeof g_last_move_pos);
             ack_op = off::kOpMoveActorAck;
             ack = move_ack(payload);
-            if (u32_at(payload, 0x8C) == kPuppetHorse) ride_horse(payload, now, move_hold);
+            if (u32_at(payload, off::kMvParent) == kPuppetHorse) ride_horse(payload, now, move_hold);
             {
                 // Dismounted (parent back to none for a few Moves): unless our
                 // copy really rides our copy of the horse, reload it. Only the
                 // sender's horse counts: other parents (a pulled tree, a carried
                 // animal, a boat) caused reload loops in live test 4.
-                const uint32_t parent = u32_at(payload, 0x8C);
+                const uint32_t parent = u32_at(payload, off::kMvParent);
                 const uint32_t horse = g_sender_horse;
                 const bool riding = horse && (parent == kPuppetHorse || parent == horse);
                 if (riding) {
@@ -1642,9 +1696,9 @@ void puppet_event(const proto::GameEvent& ev, int64_t ts_shift_ms, uint64_t dela
         case proto::EventKind::StartAction:
             // A StartAction right after a filled climb-up that still carries the
             // frozen start position: move it to where the sender ended up.
-            if (payload.size() == 725 && g_recent_gap.valid) {
+            if (payload.size() == off::kSaReqSize && g_recent_gap.valid) {
                 if (now - g_recent_gap.detected_ms <= 300) {
-                    for (size_t at : {size_t{0x8E}, size_t{0xD6}}) {
+                    for (size_t at : {off::sa_md(off::kMvPos), off::sa_md(off::kMvLocalPos)}) {
                         float v[3];
                         std::memcpy(v, payload.data() + at, sizeof v);
                         const float ex = v[0] - g_recent_gap.start[0], ey = v[1] - g_recent_gap.start[1],
@@ -1778,9 +1832,20 @@ void puppet_event(const proto::GameEvent& ev, int64_t ts_shift_ms, uint64_t dela
         return;
     }
     if (ev.kind == proto::EventKind::Move) {
+        // 3479 sends Moves far more often (40-80/s). The client keeps 30
+        // samples and draws at now - 200 ms (buffer at mc+0x430, 2976 +0x3D0),
+        // so at that rate the window no longer reaches back far enough: the
+        // copy froze, then jumped (movimiento-remoto-cliente.md, S4). Keep at
+        // most one Move per kMinMoveSpacingMs of game time.
+        constexpr uint64_t kMinMoveSpacingMs = 40;
+        static uint64_t last_kept_ts = 0;
+        uint64_t ts = 0;
+        if (ack->size() >= off::kMvTs + 8) std::memcpy(&ts, ack->data() + off::kMvTs, 8);
+        if (ts && last_kept_ts && ts > last_kept_ts && ts - last_kept_ts < kMinMoveSpacingMs) return;
+        last_kept_ts = ts;
         enqueue_at(make_packet(ack_op, *ack), movement_due(now + move_hold), /*movement=*/true);
     } else {
-        g_action_hold = action_hold_for(*ack, ev.kind == proto::EventKind::StartAction ? 0x160 : 0x9C, delay_ms);
+        g_action_hold = action_hold_for(*ack, ev.kind == proto::EventKind::StartAction ? off::sa_md(off::kMvTs) + 1 : 0x9C, delay_ms);
         const uint64_t due = action_due(now + g_action_hold);
         if (ev.kind == proto::EventKind::StartAction && !is_horse && g_copy_hooked && payload.size() >= 12) {
             const uint32_t next = u32_at(payload, 8);
@@ -1808,6 +1873,63 @@ void puppet_event(const proto::GameEvent& ev, int64_t ts_shift_ms, uint64_t dela
 }
 
 uint64_t g_ride_forced_logged = 0;
+
+// ClientStatusActorComponent vf79 (0x6E90A0): the hide-flags change handler.
+// rcx = status, rdx = old hide mask, r8 = new mask, xmm3 = fade time. It sets
+// the model opacity from [status+0x3B8] | [status+0x3C0] (2976: +0x390/+0x394)
+// and pushes it to the meshes (0xB628D0).
+using StatusHideChanged = void(__fastcall*)(uintptr_t, uint64_t, uint64_t, float);
+constexpr uintptr_t kStatusHideChanged = 0x6E90A0;
+constexpr uint32_t kStatus_HideA = 0x3B8, kStatus_HideB = 0x3C0;
+
+bool call_hide_changed(uintptr_t status, uint64_t old_mask, uint64_t new_mask) {
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    __try {
+        reinterpret_cast<StatusHideChanged>(base + kStatusHideChanged)(status, old_mask, new_mask, 0.3f);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool poke_byte(uintptr_t at, uint8_t value) {
+    __try {
+        *reinterpret_cast<volatile uint8_t*>(at) = value;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// 3479: a freshly loaded copy gets a hide reason (bit 20, 0x100000, in
+// ClientStatusActorComponent +0x3B8) that the local player never has, so the
+// game keeps it at opacity 0 and does not draw it (PORTING-3479.md). Every
+// 250 ms, while a copy exists, any hide bits on it are cleared and the game's
+// own change handler (0x6E90A0) is run so the opacity reaches its meshes.
+void keep_copies_visible() {
+    static uint64_t next = 0, cleared = 0;
+    const uint64_t now = steady_ms();
+    if (now < next || !puppet_spawned()) return;
+    next = now + 250;
+    for (const uint32_t key : {kPuppetPlayer, kPuppetHorse}) {
+        const auto actor = game::find_actor(key);
+        if (!actor) continue;
+        uint64_t table = 0, status = 0, a = 0, b = 0;
+        game::safe_read(*actor + 0x68, &table, 8);
+        if (table) game::safe_read(table + 0x20, &status, 8);
+        if (!status || !game::safe_read(status + kStatus_HideA, &a, 8) || !game::safe_read(status + kStatus_HideB, &b, 8)) {
+            continue;
+        }
+        if (!(a | b)) continue;
+        for (int i = 0; i < 8; ++i) poke_byte(status + kStatus_HideA + i, 0), poke_byte(status + kStatus_HideB + i, 0);
+        const bool called = call_hide_changed(status, a | b, 0);
+        if (cleared++ < 20) {
+            log::info("Puppet: copy 0x{:08X} was hidden (Status+3B8 0x{:X} +3C0 0x{:X}); shown again ({})", key, a, b,
+                      called ? "handler run" : "handler FAULTED");
+        }
+    }
+}
+
 
 // A copy that stays far from where its moves put it, while they keep coming,
 // is stuck: load it again. Not while riding (the horse moves it) and at most
@@ -1980,6 +2102,7 @@ void puppet_tick() {
         }
     }
     watch_stuck();
+    keep_copies_visible();
     if (const bool paused = g_paused_now.load(std::memory_order_relaxed); paused != g_paused_logged) {
         log::info("Puppet: this game is {}", paused ? "paused (menu): copy movement held back"
                                                      : "running again: copy movement resumes");
@@ -2045,8 +2168,8 @@ void puppet_tick() {
 bool movement_ts(const Bytes& pk, size_t& at, InjectClock::Buffer& buffer) {
     if (pk.size() < 5 + 4) return false;
     const uint16_t op = static_cast<uint16_t>(pk[0] | (pk[1] << 8));
-    if (op == off::kOpMoveActorAck) at = 5 + 0xD5, buffer = InjectClock::Buffer::Position;
-    else if (op == off::kOpStartActionAck) at = 5 + 0x160, buffer = InjectClock::Buffer::Both;
+    if (op == off::kOpMoveActorAck) at = 5 + off::kMvTs, buffer = InjectClock::Buffer::Position;
+    else if (op == off::kOpStartActionAck) at = 5 + off::sa_md(off::kMvTs) + 1, buffer = InjectClock::Buffer::Both;
     else if (op == off::kOpRotateActorAck) at = 5 + 0x9C, buffer = InjectClock::Buffer::Rotation;
     else return false;
     return pk.size() >= at + 8;
@@ -2061,7 +2184,7 @@ namespace {
 // 0x1434880. ~0 if anything is missing. Client network thread only, where the
 // game handles RemoteCatchResultAck itself.
 uintptr_t scene_object_manager(uintptr_t base) {
-    const auto world = game::read_ptr(base + 0x6D69190);
+    const auto world = game::read_ptr(base + off::kWorldSystemSlot);
     const auto a = world ? game::read_ptr(*world + 0xC8) : std::nullopt;
     const auto b = a ? game::read_ptr(*a) : std::nullopt;
     const auto m = b ? game::read_ptr(*b + 0x80) : std::nullopt;
@@ -2079,7 +2202,7 @@ uint64_t rope_piece_of(uintptr_t base, const uint8_t* scene) {
     bool attached = false;
     g_rope_lookup_faulted = true;  // stays so if the game code below faults
     __try {
-        reinterpret_cast<Find>(base + 0x1851010)(mgr, att, scene);
+        reinterpret_cast<Find>(base + 0x19907E0)(mgr, att, scene);
         attached = true;
         uintptr_t obj = 0;
         std::memcpy(&obj, att + 8, sizeof obj);
@@ -2098,9 +2221,9 @@ uint64_t rope_piece_of(uintptr_t base, const uint8_t* scene) {
     }
     if (attached) {
         __try {
-            const uintptr_t vt = base + 0x5725E48;  // ScopeAttacherBase, as the game leaves it
+            const uintptr_t vt = base + 0x5ABD778;  // ScopeAttacherBase, as the game leaves it
             std::memcpy(att, &vt, sizeof vt);
-            reinterpret_cast<Release>(base + 0x1434880)(att);
+            reinterpret_cast<Release>(base + 0x1616930)(att);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             return ~0ull;
         }
@@ -2169,7 +2292,7 @@ bool bend_tree(uintptr_t base, uintptr_t copy, uintptr_t own, float copy_x, floa
                 return true;
             }
         }
-        const uintptr_t node = reinterpret_cast<Node>(base + 0x5B1600)(comp, 0);
+        const uintptr_t node = reinterpret_cast<Node>(base + 0x66C820)(comp, 0);
         if (!node) return true;
         // Only a tree the game itself would bend (0x1191078): p = [node+0x108]
         // ->vf(0x328)(), with p and byte p+0x18 set.
@@ -2179,10 +2302,10 @@ bool bend_tree(uintptr_t base, uintptr_t copy, uintptr_t own, float copy_x, floa
         const auto vt = *reinterpret_cast<const uintptr_t* const*>(obj);
         const uintptr_t p = reinterpret_cast<CanBend>(vt[0x328 / 8])(obj);
         if (!p || *reinterpret_cast<const uint8_t*>(p + 0x18) == 0) return true;
-        const uintptr_t tree = reinterpret_cast<Tree>(base + 0x491AC0)(node);
+        const uintptr_t tree = reinterpret_cast<Tree>(base + 0x539E90)(node);
         if (!tree) return true;
         alignas(16) uint8_t out[0x40] = {};
-        if (!reinterpret_cast<Point>(base + 0x5A4760)(comp, 0, out)) return true;
+        if (!reinterpret_cast<Point>(base + 0x660320)(comp, 0, out)) return true;
         float hx, hz;
         std::memcpy(&hx, out + 0x1C, 4);
         std::memcpy(&hz, out + 0x24, 4);
@@ -2190,7 +2313,7 @@ bool bend_tree(uintptr_t base, uintptr_t copy, uintptr_t own, float copy_x, floa
         const float len = std::sqrt(dir[0] * dir[0] + dir[2] * dir[2]);
         if (!(len > 0.01f) || !std::isfinite(len)) return true;
         dir[0] /= len, dir[2] /= len;
-        reinterpret_cast<Bend>(base + 0x349EA10)(tree, dir, strength);
+        reinterpret_cast<Bend>(base + 0x3766CB0)(tree, dir, strength);
         // The rope's flex, as the local pull leaves it (arbol-cuerda-4 R2): visual only.
         *reinterpret_cast<float*>(comp + 0x4E0) = strength;
         *reinterpret_cast<float*>(comp + 0x4E4) = kBendPerSecond;
@@ -2256,7 +2379,7 @@ bool rope_effect(uintptr_t copy, bool hooked) {
 bool node_world(uintptr_t base, uintptr_t node, float out[3]) {
     using Get = void*(__fastcall*)(uintptr_t, void*);
     alignas(16) uint8_t xf[0x30] = {};
-    reinterpret_cast<Get>(base + 0x26D3940)(node, xf);
+    reinterpret_cast<Get>(base + 0x2900F70)(node, xf);
     float p[3];
     int16_t sx, sz;
     std::memcpy(p, xf + 0x1C, sizeof p);
@@ -2289,7 +2412,7 @@ bool rope_end(uintptr_t comp, uint8_t slot) {
         alignas(16) uint8_t xf[0x30] = {};
         const float unit[7] = {1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f};
         std::memcpy(xf, unit, sizeof unit);
-        if (!reinterpret_cast<Target>(base + 0x5A40E0)(comp, 0, xf)) return true;
+        if (!reinterpret_cast<Target>(base + 0x65FCA0)(comp, 0, xf)) return true;
         float t[3], b[3];
         std::memcpy(t, xf + 0x1C, sizeof t);
         if (node_world(base, o - 0x28, b)) {
@@ -2299,8 +2422,8 @@ bool rope_end(uintptr_t comp, uint8_t slot) {
         }
         if (!is_copy) return true;  // ours: measured only
         std::memset(xf + 0x28, 0, 4);
-        reinterpret_cast<Split>(base + 0x50EA00)(xf);
-        reinterpret_cast<SetWorld>(base + 0x26D4B40)(o - 0x28, xf, 0, 1);
+        reinterpret_cast<Split>(base + 0x5C44A0)(xf);
+        reinterpret_cast<SetWorld>(base + 0x2902170)(o - 0x28, xf, 0, 1);
         g_rope_end_sets.fetch_add(1, std::memory_order_relaxed);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -2376,12 +2499,12 @@ bool puppet_install_rope_bend() {
     const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     static const uint8_t kHead[] = {0x48, 0x8B, 0x8E, 0xC8, 0x00, 0x00, 0x00, 0xE8};  // mov rcx,[rsi+0xC8]; call
     uint8_t head[sizeof kHead];
-    if (base != off::kImageBase || !game::safe_read(base + 0x86A576, head, sizeof head) ||
+    if (base != off::kImageBase || !game::safe_read(base + 0x94EC66, head, sizeof head) ||
         std::memcmp(head, kHead, sizeof head) != 0) {
         log::warn("Puppet: actor update not recognised; the tree will not bend for the other player");
         return false;
     }
-    g_bend_hook = safetyhook::create_mid(reinterpret_cast<void*>(base + 0x86A576), on_actor_update);
+    g_bend_hook = safetyhook::create_mid(reinterpret_cast<void*>(base + 0x94EC66), on_actor_update);
     g_rope_bend = static_cast<bool>(g_bend_hook);
     g_rope_effect = g_rope_bend.load();
     log::info("Puppet: tree bend and rope effect for the other player's rope {}",
@@ -2389,9 +2512,9 @@ bool puppet_install_rope_bend() {
     // R5 (arbol-cuerda-5.md): movzx r8d,sil; vmovaps xmm1,xmm6; mov rcx,rdi; call 0x5AEAA0.
     static const uint8_t kSlotTick[] = {0x44, 0x0F, 0xB6, 0xC6, 0xC5, 0xF8, 0x28, 0xCE, 0x48, 0x8B, 0xCF, 0xE8};
     uint8_t at[sizeof kSlotTick];
-    if (g_rope_bend && !g_rope_end_hook && game::safe_read(base + 0x59D89A, at, sizeof at) &&
+    if (g_rope_bend && !g_rope_end_hook && game::safe_read(base + 0x659402, at, sizeof at) &&
         std::memcmp(at, kSlotTick, sizeof at) == 0) {
-        g_rope_end_hook = safetyhook::create_mid(reinterpret_cast<void*>(base + 0x59D89A), on_rope_slot_tick);
+        g_rope_end_hook = safetyhook::create_mid(reinterpret_cast<void*>(base + 0x659402), on_rope_slot_tick);
         g_rope_end = static_cast<bool>(g_rope_end_hook);
     }
     log::info("Puppet: the other player's rope end on the tree: {}", g_rope_end ? "installed" : "NOT installed");
@@ -2518,6 +2641,17 @@ bool puppet_install_layer_guards() {
             return false;
         }
         log::info("Puppet: action-layer crash guard installed");
+    }
+    if (!g_playback_guard_hook) {
+        uint8_t h[sizeof off::kLayerPlaybackReadHead];
+        if (game::safe_read(base + off::kLayerPlaybackRead, h, sizeof h) &&
+            std::memcmp(h, off::kLayerPlaybackReadHead, sizeof h) == 0) {
+            g_playback_skip_to = base + off::kLayerPlaybackSkip;
+            auto hook = safetyhook::MidHook::create(reinterpret_cast<void*>(base + off::kLayerPlaybackRead),
+                                                    layer_playback_read);
+            if (hook) g_playback_guard_hook = std::move(*hook);
+        }
+        log::info("Puppet: layer-playback crash guard {}", g_playback_guard_hook ? "installed" : "NOT installed");
     }
     return true;
 }

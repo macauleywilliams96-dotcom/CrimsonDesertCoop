@@ -513,7 +513,7 @@ void combat_test_loop() {
                 std::memcpy(b.data(), &npc->key, 4);
                 std::memcpy(b.data() + 4, &hp_stat, 4);
                 std::memcpy(b.data() + 8, &delta, 8);
-                const bool ok = net::sniffer_inject_c2s(packet(2181, b));
+                const bool ok = net::sniffer_inject_c2s(packet(2565, b));
                 log::info("Combat test T2: VaryStatByAccInputReq(0x{:08X} at {:.1f} m, HP, -5) {}",
                           npc->key, npc->distance, ok ? "queued" : "NOT queued");
             } else {
@@ -531,7 +531,7 @@ void combat_test_loop() {
                 std::memcpy(b.data() + 12, pos, 12);
                 std::memcpy(b.data() + 24, dir, 12);
                 std::memcpy(b.data() + 36, &hash, 4);
-                const bool ok = net::sniffer_inject_c2s(packet(2815, b));
+                const bool ok = net::sniffer_inject_c2s(packet(2150, b));
                 log::info("Combat test T3: AttackByCollisionReq(0x{:08X} at {:.1f} m, hash 0x{:08X}) {}",
                           npc->key, npc->distance, hash, ok ? "queued" : "NOT queued");
             }
@@ -556,8 +556,21 @@ void mirror_hotkey_loop(uint32_t delay_ms) {
     reader.init();
     bool mirror_on = true;
     bool f9_was = false, f10_was = false, f11_was = false;
+    uint64_t respawn_at = 0;  // the copy was removed after a dismount: load it again then
     while (!stop_requested(50)) {
-        const bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+        bool f9 = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+        // Dismount: same as F10 then F9 (co-op does this in coop.cpp).
+        if (net::puppet_take_reload_request() && net::puppet_spawned()) {
+            net::capture_set_sink({});
+            net::puppet_remove();
+            respawn_at = GetTickCount64() + 1000;
+        }
+        if (respawn_at && GetTickCount64() >= respawn_at) {
+            respawn_at = 0;
+            f9 = true;
+            f9_was = false;
+            log::info("Mirror: reloading the copy after the dismount");
+        }
         const bool f10 = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
         const bool f11 = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
         if (f11 && !f11_was) {
@@ -697,6 +710,10 @@ DWORD WINAPI late_init(LPVOID param) {
         if (init->clone_hotkeys) log::info("Mirror hotkeys off while co-op is enabled");
     } else if (init->clone_hotkeys) {
         net::puppet_set_offset(init->mirror_offset_m);
+        // Same horse setup as co-op: the horse copy needs the crash containment.
+        const bool contained = init->coop_horse && net::horse_diag_install(/*contain=*/true);
+        net::puppet_set_horse_enabled(contained);
+        if (init->coop_horse && !contained) log::warn("Mirror: horse copy disabled (no crash containment)");
         net::puppet_install_climb_fix();
         net::capture_install_equip_hook();
         mirror_hotkey_loop(init->mirror_delay_ms);

@@ -129,6 +129,11 @@ add_executable(cdmp_peer tools/peer_sim/main.cpp)
 cdmp_strict(cdmp_peer)
 target_link_libraries(cdmp_peer PRIVATE cdmp_common)
 
+# Player-facing: updates the mod from GitHub releases, then starts the game.
+add_executable(CoopLauncher WIN32 tools/launcher/main.cpp)
+cdmp_strict(CoopLauncher)
+target_link_libraries(CoopLauncher PRIVATE winhttp shell32)
+
 add_executable(cdmp_host tools/host/main.cpp)
 cdmp_strict(cdmp_host)
 

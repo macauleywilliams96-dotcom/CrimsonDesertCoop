@@ -12,10 +12,14 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "common/enemy_load.h"
 #include "common/keys.h"
 #include "mod/game/actor_lookup.h"
+#include "mod/game/offsets.h"
+#include "mod/game/safe_memory.h"
 #include "mod/log.h"
 #include "mod/net/local_capture.h"
 #include "mod/net/loot_twin.h"
@@ -26,14 +30,15 @@ namespace cdmp::net {
 namespace {
 
 using Bytes = std::vector<uint8_t>;
+namespace off = game::build_2976;
 
 constexpr uint16_t kOpActorLoadDataAck = 2005;
-constexpr uint16_t kOpRemoveActorAck = 2516;
-constexpr uint16_t kOpStartActionReq = 2223;
-constexpr uint16_t kOpRotateActorReq = 2828;
-constexpr uint16_t kOpChangeBattleStateReq = 2257;  // 5 B: u32 actor | u8 state (0 = out of combat)
-constexpr uint16_t kOpDoFrameEventReq = 2380;       // u8 4 | u32 attacker | ... | 665-byte target entries at the end
-constexpr uint16_t kOpCurrentTargetChangeReq = 2984;  // u32 actor | u32 target | u64 seq | u8 | u8 reason
+constexpr uint16_t kOpRemoveActorAck = 3067;
+constexpr uint16_t kOpStartActionReq = 2202;
+constexpr uint16_t kOpRotateActorReq = 2852;
+constexpr uint16_t kOpChangeBattleStateReq = 2453;  // 5 B: u32 actor | u8 state (0 = out of combat)
+constexpr uint16_t kOpDoFrameEventReq = 3030;       // u8 4 | u32 attacker | ... | 665-byte target entries at the end
+constexpr uint16_t kOpCurrentTargetChangeReq = 2820;  // u32 actor | u32 target | u64 seq | u8 | u8 reason
 constexpr uint64_t kEngagedMs = 20000;
 // An enemy that aimed at or struck one of us this long ago still counts as
 // hostile: one locked on us sends no new CurrentTargetChangeReq, and its
@@ -41,20 +46,24 @@ constexpr uint64_t kEngagedMs = 20000;
 constexpr uint64_t kAimedMs = 120000;
 // Server->client messages about an enemy (key at +0), relayed for its copy
 // (enemigos-del-anfitrion.md §3.1): HP and death reliably, hit reactions not.
-constexpr uint16_t kOpVaryHPAck = 2147;               // 92 B; +0x40 per-actor sequence, kept
-constexpr uint16_t kOpNotifyHandleDeadAck = 2530;     // 19 B: dead | killer | reason
+constexpr uint16_t kOpVaryHPAck = 2740;               // 92 B; +0x40 per-actor sequence, kept
+constexpr uint16_t kOpNotifyHandleDeadAck = 2985;     // 19 B: dead | killer | reason
 // What a server sends once a corpse is emptied (botin-invitado.md §1): a dead
 // copy offered the loot prompt, but our server has no such actor and gave
 // nothing (two-PC test, 6 Oct). Sent for it ~1 s after its death.
-constexpr uint16_t kOpLootDropCharacterRewardListAck = 2897;  // u8 4 | u32 dead | n x 37 B
-constexpr uint16_t kOpRemoveLootableAck = 2822;               // u32 dead | u32 player
+constexpr uint16_t kOpLootDropCharacterRewardListAck = 2414;  // u8 4 | u32 dead | n x 37 B
+constexpr uint16_t kOpRemoveLootableAck = 3066;               // u32 dead | u32 player
 constexpr uint64_t kNoLootAfterMs = 1000;
-constexpr uint16_t kOpAttackTargetAck = 2922;         // hit effect on the target at +0
-constexpr uint16_t kOpApplyActionRestrictionAck = 2162;
+constexpr uint16_t kOpAttackTargetAck = 2791;         // hit effect on the target at +0
+constexpr uint16_t kOpApplyActionRestrictionAck = 3059;
 constexpr size_t kRotateActorReqSize = 176;
 constexpr uint64_t kPosIntervalMs = 66;  // ~15 Hz
 constexpr uint64_t kPosKeepAliveMs = 900;  // the remote buffer wants a sample every <= 1 s
-constexpr size_t kStartActionReqSize = 725;
+constexpr size_t kStartActionReqSize = off::kSaReqSize;
+// StartActionReq fields (MoveData moved in build 3479, see offsets.h).
+constexpr size_t kSaParent = off::sa_md(off::kMvParent);    // 2976: 0x116
+constexpr size_t kSaKeyField = off::sa_md(off::kMvKeyField);  // 2976: 0xAA
+constexpr size_t kSaTarget = off::kSaAfterMd + 4;            // 2976: 0x16C
 constexpr uint32_t kPuppetUser = 0x9010F001;
 constexpr uint32_t kPuppetPlayer = 0xA010F001;
 constexpr float kPickRadius = 40.0f;
@@ -125,13 +134,13 @@ struct Sampled {
 };
 constexpr float kMaxSpeed = 30.0f;  // m/s; faster is a bogus read (see below)
 
-// The parent (u32 key) in an enemy's last StartActionReq (+0x116 Path.parent):
+// The parent (u32 key) in an enemy's last StartActionReq (MoveData parent):
 // during a finisher the enemy hangs from the player who does it.
 uint32_t last_action_parent(uint32_t key) {
     std::lock_guard lock(g_mutex);
     auto a = g_actions.find(key);
-    if (a == g_actions.end() || a->second.empty() || a->second.back().size() < 0x11A) return 0;
-    return u32_at(a->second.back().data() + 0x116);
+    if (a == g_actions.end() || a->second.empty() || a->second.back().size() < kSaParent + 4) return 0;
+    return u32_at(a->second.back().data() + kSaParent);
 }
 std::map<uint32_t, Sampled> g_sampled;  // world NPC key -> last position sent (network thread)
 uint64_t g_last_sample_ms = 0;
@@ -543,7 +552,7 @@ void map_field_locked(Bytes& v, size_t off, bool parent64) {
 uint64_t g_dropped_messages = 0;
 bool map_message_locked(uint16_t op, Bytes& v, uint32_t self) {
     switch (op) {
-        case kOpStartActionReq: map_field_locked(v, 0x116, true), map_field_locked(v, 0x16C, false); break;
+        case kOpStartActionReq: map_field_locked(v, kSaParent, true), map_field_locked(v, kSaTarget, false); break;
         case kOpRotateActorReq: map_field_locked(v, 0x54, true); break;
         case kOpVaryHPAck: map_field_locked(v, 0x54, false); break;
         case kOpNotifyHandleDeadAck: map_field_locked(v, 0x04, false); break;
@@ -1555,9 +1564,9 @@ void no_parent(Bytes& v, size_t off) {
 void scrub_message(uint16_t op, Bytes& v, uint32_t copy, uint32_t own) {
     switch (op) {
         case kOpStartActionReq:
-            no_parent(v, 0x116);
-            scrub_field(v, 0x16C, copy, own);
-            scrub_key_shaped(v, 0xAA, copy, own);
+            no_parent(v, kSaParent);
+            scrub_field(v, kSaTarget, copy, own);
+            scrub_key_shaped(v, kSaKeyField, copy, own);
             break;
         case kOpRotateActorReq: no_parent(v, 0x54); break;
         case kOpVaryHPAck: scrub_field(v, 0x54, copy, own); break;
@@ -1647,7 +1656,7 @@ bool check_spawn(uint32_t copy, const Bytes& spawn, Bytes& load, Bytes& action, 
         for (size_t i = 4; i + 4 <= one.size(); ++i) {
             const uint32_t k = u32_at(one.data() + i);
             if (!keys::is_actor_key(k) || k == copy || is_network_key(k)) continue;
-            if (k == own && (i == 0x16C || i == 0xAA)) continue;
+            if (k == own && (i == kSaTarget || i == kSaKeyField)) continue;
             if (k == own || (own_user && k == own_user) || game::find_actor(k)) {
                 why = std::format("its action {} names our actor 0x{:08X} at +{}", at / kStartActionReqSize, k, i);
                 return false;

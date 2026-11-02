@@ -20,8 +20,9 @@ namespace off = build_2976;
 // Entry of the logger: arguments 10-13 on the stack ([rsp] = return address).
 // Seen at a call site (0x35AED1..0x35AF10): arg10 dword = code, arg11 dword =
 // severity, arg12 = const char* message (printf format), arg13 = first value.
-constexpr uintptr_t kErrorLogger = 0x35D8D0;
-constexpr uint8_t kErrorLoggerHead[] = {0xE9};  // starts with a jmp into .xtls
+constexpr uintptr_t kErrorLogger = 0x3A6D80;
+// Build 2976 started with a jmp into .xtls; build 3479 has a plain prologue.
+constexpr uint8_t kErrorLoggerHead[] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C};
 constexpr uint32_t kArgCode = 0x50, kArgSeverity = 0x58, kArgText = 0x60, kArgValue = 0x68;
 constexpr int kExtraValues = 3;  // arguments 14-16 (more format values, if any)
 
@@ -79,8 +80,10 @@ void on_error(safetyhook::Context& ctx) {
 bool game_errors_install() {
     if (g_hook) return true;
     g_base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    uint8_t head[1];
-    if (g_base != off::kImageBase || !safe_read(g_base + kErrorLogger, head, 1) || head[0] != kErrorLoggerHead[0]) {
+    uint8_t head[sizeof kErrorLoggerHead];
+    const bool is_jmp = safe_read(g_base + kErrorLogger, head, 1) && head[0] == 0xE9;
+    if (g_base != off::kImageBase || !safe_read(g_base + kErrorLogger, head, sizeof head) ||
+        (!is_jmp && std::memcmp(head, kErrorLoggerHead, sizeof head) != 0)) {
         log::warn("Game errors: logger not recognised; not hooked");
         return false;
     }
@@ -90,6 +93,11 @@ bool game_errors_install() {
         g_hook = std::move(*direct);
         log::info("Game errors: hook installed (the game's internal errors go to this log)");
         return true;
+    }
+    if (!is_jmp) {
+        log::warn("Game errors: could not hook the logger (safetyhook error {}); not hooked",
+                  static_cast<int>(direct.error().type));
+        return false;
     }
     log::info("Game errors: direct hook not possible (safetyhook error {}, inline {}); using a stub",
               static_cast<int>(direct.error().type),

@@ -1,0 +1,247 @@
+{
+  "kErrorLogger": {
+    "file": "mod\\game\\game_errors.cpp",
+    "kind": "code",
+    "old": "0x35d8d0",
+    "new": null,
+    "how": "not found@16B"
+  },
+  "kWorldSystemSlot": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x6d69190",
+    "new": "0x71b6c50",
+    "how": "3/3 refs agree"
+  },
+  "kChunkOrigin": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x6d56500",
+    "new": "0x71a2eb0",
+    "how": "3/3 refs agree"
+  },
+  "kStaticPlayerPos": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x6d77858",
+    "new": "0x71c5df0",
+    "how": "2/2 refs agree"
+  },
+  "kClientClock": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "code",
+    "old": "0x1416b80",
+    "new": null,
+    "how": "not found@24B"
+  },
+  "kClientFrameClockMs": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x6c8cd68",
+    "new": "0x70d2da0",
+    "how": "3/3 refs agree"
+  },
+  "kClientFrameClockUs": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x6c8cd70",
+    "new": "0x70d2db0",
+    "how": "3/3 refs agree"
+  },
+  "kClientClockBias": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x6d69438",
+    "new": "0x71b6ef8",
+    "how": "3/3 refs agree"
+  },
+  "kFieldTimeClient": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x6a6d218",
+    "new": "0x6ea4998",
+    "how": "3/3 refs agree"
+  },
+  "kVtClientActorManager": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x55b62c8",
+    "new": "0x593ecf0",
+    "how": "1/1 refs agree"
+  },
+  "kVtControlledActor": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x5585c40",
+    "new": "0x590cca0",
+    "how": "1/1 refs agree"
+  },
+  "kVtCharacterControl": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x55b5460",
+    "new": "0x593d8e0",
+    "how": "2/2 refs agree"
+  },
+  "kVtStatusComponent": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x558d868",
+    "new": null,
+    "how": "no match (2 refs tried)"
+  },
+  "kVtPhysicsObject": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x5d00f88",
+    "new": "0x60c52e0",
+    "how": "2/2 refs agree"
+  },
+  "kCameraSlot": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x6c8cf30",
+    "new": "0x70d2f68",
+    "how": "1/1 refs agree"
+  },
+  "kVtCamera": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x5d20718",
+    "new": "0x60e5150",
+    "how": "1/1 refs agree"
+  },
+  "kClientPostPacket": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "code",
+    "old": "0x35c670",
+    "new": "0x3a5a30",
+    "how": "unique@32B"
+  },
+  "kClientOnRecvPacket": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "code",
+    "old": "0x35ca00",
+    "new": "0x3a5dc0",
+    "how": "unique@32B"
+  },
+  "kTrocInstancesBegin": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x6a51ae0",
+    "new": "0x73547bc",
+    "how": "1/1 refs agree"
+  },
+  "kTrocInstancesEnd": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x6a82c80",
+    "new": "0x6ebb370",
+    "how": "2/2 refs agree"
+  },
+  "kMinimapIconDecide": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "code",
+    "old": "0x9e89c0",
+    "new": "0xaed090",
+    "how": "unique@48B"
+  },
+  "kMinimapIconRoot": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x6d69528",
+    "new": "0x71b6fe8",
+    "how": "3/3 refs agree"
+  },
+  "kMinimapIconRootAlt": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x6d69530",
+    "new": "0x71b6ff0",
+    "how": "3/3 refs agree"
+  },
+  "kServerOtherEquipWriter": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "code",
+    "old": "0x29ed1f0",
+    "new": null,
+    "how": "ambiguous (3 hits@128B)"
+  },
+  "kServerDockingWriter": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "code",
+    "old": "0x2969bc0",
+    "new": null,
+    "how": "ambiguous (3 hits@128B)"
+  },
+  "kVtWallUpMovementMethod": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "data",
+    "old": "0x55968b8",
+    "new": "0x5e507c8",
+    "how": "1/1 refs agree"
+  },
+  "kPointClimbEnter": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "code",
+    "old": "0x691400",
+    "new": "0x75ffc0",
+    "how": "unique@24B"
+  },
+  "kActionLayerAdvance": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "code",
+    "old": "0x1f63f70",
+    "new": "0x214c070",
+    "how": "unique@16B"
+  },
+  "kActionLayersAdvance": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "code",
+    "old": "0x2329700",
+    "new": null,
+    "how": "not found@16B"
+  },
+  "kRideOnEnter": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "code",
+    "old": "0x681c80",
+    "new": "0x22c6240",
+    "how": "unique@64B"
+  },
+  "kRideOffEnter": {
+    "file": "mod\\game\\offsets.h",
+    "kind": "code",
+    "old": "0x682c20",
+    "new": "0x750240",
+    "how": "unique@48B"
+  },
+  "kMinAddress": {
+    "file": "mod\\game\\safe_memory.cpp",
+    "kind": "code",
+    "old": "0x10000",
+    "new": "0x10000",
+    "how": "unique@128B"
+  },
+  "kIsTargetable": {
+    "file": "mod\\net\\aggro_test.cpp",
+    "kind": "code",
+    "old": "0x22141e0",
+    "new": "0x23e4c40",
+    "how": "unique@32B"
+  },
+  "kSetCurrentTarget": {
+    "file": "mod\\net\\aggro_test.cpp",
+    "kind": "code",
+    "old": "0x2217290",
+    "new": "0x23e84c0",
+    "how": "unique@24B"
+  },
+  "kCheckAIBattleType": {
+    "file": "mod\\net\\aggro_test.cpp",
+    "kind": "code",
+    "old": "0x22e0a30",
+    "new": null,
+    "how": "not found@16B"
+  }
+}

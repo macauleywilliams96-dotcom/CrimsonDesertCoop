@@ -17,6 +17,7 @@
 #include "mod/game/actor_lookup.h"
 #include "mod/game/game_clock.h"
 #include "mod/game/offsets.h"
+#include "mod/game/rtti.h"
 #include "mod/game/player_reader.h"
 #include "mod/game/safe_memory.h"
 #include "mod/log.h"
@@ -43,13 +44,13 @@ constexpr uint32_t kPuppetPlayer = 0xA010F001;
 constexpr uint32_t kPuppetBody = 0xB010F001;
 constexpr uint32_t kPuppetHorse = 0xB010F002;
 
-constexpr size_t kMoveReqSize = 514;
-constexpr size_t kMoveWireSize = 0xEA;  // what is sent of it (see emit)
-constexpr size_t kStartActionReqSize = 725;
+constexpr size_t kMoveReqSize = off::kMvReqSize;
+constexpr size_t kMoveWireSize = off::kMvWireSize;  // what is sent of it (see emit)
+constexpr size_t kStartActionReqSize = off::kSaReqSize;
 constexpr size_t kRotateReqSize = 176;
-constexpr size_t kWallUpSize = 132;
-constexpr size_t kMoveTs = 0xD5;
-constexpr size_t kStartActionTs = 0x15F;
+constexpr size_t kWallUpSize = 135;  // 3479 (2976: 132)
+constexpr size_t kMoveTs = off::kMvTs;
+constexpr size_t kStartActionTs = off::sa_md(off::kMvTs);
 constexpr size_t kRotateTs = 0x9C;
 
 uint64_t steady_ms() {
@@ -95,9 +96,9 @@ std::map<uint32_t, ActorSeen> g_actors;
 std::atomic<uint32_t> g_last_attack_hash{0};
 std::atomic<uint32_t> g_last_attack_target{0};
 std::set<uint32_t> g_has_hp;  // under g_actors_mutex
-constexpr uint16_t kOpVaryHPAck = 2147;
-constexpr uint16_t kOpNotifyHandleDeadAck = 2530;
-constexpr uint16_t kOpVaryStatByAccInputReq = 2181;
+constexpr uint16_t kOpVaryHPAck = 2740;
+constexpr uint16_t kOpNotifyHandleDeadAck = 2985;
+constexpr uint16_t kOpVaryStatByAccInputReq = 2565;
 constexpr uint32_t kStatHP = 0x000F4240;
 
 // World actors with hit points, from their loads and HP messages.
@@ -114,8 +115,8 @@ std::map<uint32_t, Enemy> g_enemies;  // under g_actors_mutex
 std::atomic<bool> g_damage_enabled{false};
 std::atomic<bool> g_key_alarm{false};
 uint64_t g_damage_sent = 0, g_damage_applied = 0, g_damage_unmatched = 0;
-constexpr uint16_t kOpAttackTargetAck = 2922;  // PostProcessAttackResult_AttackTargetAck
-constexpr uint16_t kOpChangedEquipByQuickSlotAck = 2667;  // 6 B: u32 player | u16 weapon set
+constexpr uint16_t kOpAttackTargetAck = 2791;  // PostProcessAttackResult_AttackTargetAck
+constexpr uint16_t kOpChangedEquipByQuickSlotAck = 2440;  // 6 B: u32 player | u16 weapon set
 
 // ---------------------------------------------------------------- writer-thread state
 game::PlayerReader g_reader;
@@ -130,7 +131,7 @@ float g_horse_sent_pos[3] = {NAN, NAN, NAN};
 uint64_t g_horse_last_synth_ms = 0;
 Bytes g_last_move;                  // last real MoveActorReq payload (template for synth)
 uint64_t g_last_move_ms = 0;        // steady_ms when it was seen
-uint64_t g_last_move_ts = 0;        // its game timestamp (+0xD5)
+uint64_t g_last_move_ts = 0;        // its game timestamp (off::kMvTs)
 float g_last_sent_pos[3] = {NAN, NAN, NAN};
 uint64_t g_last_synth_ms = 0;
 uint64_t g_synthesized = 0;
@@ -354,7 +355,7 @@ void note_clock(uint64_t ts) {
 // (measured live: its path stayed at (0,0,0)). The MMO server relayed the
 // climber's path every frame while it was in movement method 5; the
 // single-player client never sends it, so read it from memory.
-// Wire layout: docs/research/broadcast-servidor-movimiento.md §10.3.
+// Wire layout: docs/research/broadcast-servidor-movimiento.md Â§10.3.
 std::optional<Bytes> read_player_wallup() {
     auto cc = g_reader.character_control();
     if (!cc) return std::nullopt;
@@ -375,17 +376,22 @@ std::optional<Bytes> read_player_wallup() {
         out.resize(at + n);
         return game::safe_read(addr, out.data() + at, n);
     };
-    const bool ok = put(*d + 0xEE0, 1)       // phase
-                    && put(*d + 0xEE4, 4)    // height class
-                    && put(*d + 0x1170, 36)  // WallUpPath _up, _forward, _end
-                    && put(*d + 0x11C0, 36)  // WallPassPath _up, _forward, _end
-                    && put(*d + 0x11E4, 4)   // _wallThickness
-                    && put(*d + 0x11E8, 3)   // _isValid, _onlyWallPass, _canAutoWallPass
-                    && put(*d + 0x1200, 4)   // navigation object id
-                    && put(*d + 0xF40, 12)   // support / raycast point
-                    && put(*d + 0xF4C, 12)   // -forward (wall normal)
-                    && put(*d + 0x10DC, 12)  // forward (xz)
-                    && put(*d + 0x1100, 4);  // wall height
+    // 3479 wire layout (decoder 0x2635E20 / 0x16F09B0) and the wall-data
+    // offsets the UpdateWallUpDataAck handler 0xC71C20 writes them to; the
+    // vault-over block gained a u32 and lost a flag, so 135 bytes (2976: 132,
+    // offsets 0x180-0x1A0 lower).
+    const bool ok = put(*d + 0x1060, 1)          // phase
+                    && put(*d + 0x1064, 4)       // height class
+                    && put(*d + 0x12F0, 36)      // WallUpPath _up, _forward, _end
+                    && put(*d + 0x1344, 36)      // WallPassPath _up, _forward, _end
+                    && put(*d + 0x1368, 4)       // _wallThickness
+                    && put(*d + 0x136C, 4)       // new in 3479 (u32)
+                    && put(*d + 0x1370, 2)       // two flags
+                    && put(*d + 0x1388, 4)       // navigation object id
+                    && put(*d + 0x10C0, 12)      // support / raycast point
+                    && put(*d + 0x10CC, 12)      // -forward (wall normal)
+                    && put(*d + 0x125C, 12)      // forward (xz)
+                    && put(*d + 0x1280, 4);      // wall height
     if (!ok || out.size() != kWallUpSize) return std::nullopt;
     return out;
 }
@@ -428,10 +434,10 @@ void capture_synth(uint64_t now) {
     Bytes req = g_last_move;
     const float pos[3] = {me->position.x, me->position.y, me->position.z};
     const float rot[4] = {me->rotation.x, me->rotation.y, me->rotation.z, me->rotation.w};
-    std::memcpy(req.data() + 0x04, pos, sizeof pos);  // current position
-    std::memcpy(req.data() + 0x10, rot, sizeof rot);  // facing (matches q@10, verified)
-    std::memcpy(req.data() + 0x4C, pos, sizeof pos);  // second copy (equal when moving)
-    std::memcpy(req.data() + 0x58, rot, sizeof rot);
+    std::memcpy(req.data() + off::kMvPos, pos, sizeof pos);  // current position
+    std::memcpy(req.data() + off::kMvRot, rot, sizeof rot);  // facing (matches q@10, verified)
+    std::memcpy(req.data() + off::kMvLocalPos, pos, sizeof pos);  // second copy (equal when moving)
+    std::memcpy(req.data() + off::kMvLocalRot, rot, sizeof rot);
     // Game clock: the game's own (stops in menus), else advanced from the
     // last real Move by the wall clock.
     uint64_t ts = g_clock_reader.load(std::memory_order_relaxed) == 1 ? capture_game_clock_ms() : 0;
@@ -462,12 +468,12 @@ void capture_horse_synth(uint64_t now) {
     if (dx * dx + dy * dy + dz * dz < kSynthMinMove * kSynthMinMove) return;
     Bytes req = g_horse_last_move;
     const float p[3] = {pos->x, pos->y, pos->z};
-    std::memcpy(req.data() + 0x04, p, sizeof p);
-    std::memcpy(req.data() + 0x4C, p, sizeof p);
+    std::memcpy(req.data() + off::kMvPos, p, sizeof p);
+    std::memcpy(req.data() + off::kMvLocalPos, p, sizeof p);
     if (auto rot = game::actor_world_rotation(g_own_horse)) {
         const float q[4] = {rot->x, rot->y, rot->z, rot->w};
-        std::memcpy(req.data() + 0x10, q, sizeof q);
-        std::memcpy(req.data() + 0x58, q, sizeof q);
+        std::memcpy(req.data() + off::kMvRot, q, sizeof q);
+        std::memcpy(req.data() + off::kMvLocalRot, q, sizeof q);
     }
     std::memcpy(req.data() + kMoveTs, &clock, 8);
     std::memcpy(g_horse_sent_pos, p, sizeof p);
@@ -510,7 +516,7 @@ void capture_observe_s2c(const uint8_t* packet, size_t size) {
         return;
     }
     if (op == kOpAttackTargetAck && size >= 5 + 0x28) {
-        // +0 target, +4 attacker, +0x24 attack hash (combate-coop.md §1.4).
+        // +0 target, +4 attacker, +0x24 attack hash (combate-coop.md Â§1.4).
         uint32_t attacker = 0, hash = 0;
         std::memcpy(&attacker, packet + 5 + 4, 4);
         std::memcpy(&hash, packet + 5 + 0x24, 4);
@@ -646,7 +652,7 @@ void capture_observe_s2c(const uint8_t* packet, size_t size) {
         const uint32_t actor = u32_at(payload, 0x0E);
         if (!keys::is_class(actor, keys::kClassPlayer)) return;  // horse, mercenaries: also user-owned
         // The first load of a session is a default character parked at
-        // (0, 1000, 0) (apariencia-estado-coop.md §3): not the player's look.
+        // (0, 1000, 0) (apariencia-estado-coop.md Â§3): not the player's look.
         if (payload.size() > off::kLoadPositionFromEnd) {
             float p[3];
             std::memcpy(p, payload.data() + payload.size() - off::kLoadPositionFromEnd, sizeof p);
@@ -711,7 +717,7 @@ void capture_observe_c2s(const uint8_t* packet, size_t size) {
     if (kind == proto::EventKind::Move && keys::is_class(key, keys::kClassWorld) && key != kPuppetBody &&
         key != kPuppetHorse && key != g_own_horse) {
         float p[3];
-        std::memcpy(p, payload.data() + 0x04, sizeof p);
+        std::memcpy(p, payload.data() + off::kMvPos, sizeof p);
         std::lock_guard lock(g_actors_mutex);
         if (g_actors.size() > 4096) g_actors.clear();
         g_actors[key] = {{p[0], p[1], p[2]}, steady_ms()};
@@ -720,7 +726,7 @@ void capture_observe_c2s(const uint8_t* packet, size_t size) {
     if (g_own_horse && key == g_own_horse) {
         if (kind == proto::EventKind::Move) {
             g_horse_last_move = payload;
-            std::memcpy(g_horse_sent_pos, payload.data() + 0x04, sizeof g_horse_sent_pos);
+            std::memcpy(g_horse_sent_pos, payload.data() + off::kMvPos, sizeof g_horse_sent_pos);
         }
         emit(kind, std::move(payload));
         return;
@@ -732,20 +738,20 @@ void capture_observe_c2s(const uint8_t* packet, size_t size) {
     std::memcpy(&ts, payload.data() + ts_off, 8);
     note_clock(ts);
     if (kind == proto::EventKind::Move && g_own_horse) {
-        // Riding: Path.parent (+0x8C) is the horse and the receiver derives
+        // Riding: the MoveData parent is the horse and the receiver derives
         // the horse's moves from ours.
         uint32_t parent = 0;
-        std::memcpy(&parent, payload.data() + 0x8C, 4);
+        std::memcpy(&parent, payload.data() + off::kMvParent, 4);
         if (parent == g_own_horse) {
             g_ridden_until_ms = steady_ms() + 200;
-            std::memcpy(g_horse_sent_pos, payload.data() + 0x94, sizeof g_horse_sent_pos);
+            std::memcpy(g_horse_sent_pos, payload.data() + off::kMvParentPos, sizeof g_horse_sent_pos);
         }
     }
     if (kind == proto::EventKind::Move) {
         g_last_move = payload;
         g_last_move_ms = steady_ms();
         g_last_move_ts = ts;
-        std::memcpy(g_last_sent_pos, payload.data() + 0x04, sizeof g_last_sent_pos);
+        std::memcpy(g_last_sent_pos, payload.data() + off::kMvPos, sizeof g_last_sent_pos);
     }
     emit(kind, std::move(payload));
 }
@@ -816,7 +822,11 @@ std::optional<proto::SpawnInfo> capture_spawn_info(const proto::Vec3& pos, const
         info.horse = g_horse;
         // Where the horse is now (the template has its load position).
         if (auto hp = game::actor_world_position(g_horse_key)) info.horse_pos = *hp;
-        else info.horse_key = 0, info.horse.clear();  // not around: leave it out
+        else {
+            // Position unreadable (e.g. while riding): the rider is on it, so use theirs.
+            info.horse_pos = pos;
+            log::info("Capture: horse 0x{:08X} position not readable; using the player's", g_horse_key);
+        }
     }
     // Gear changed since the templates were captured (the writer thread
     // updates it, so copy under its lock).
@@ -988,7 +998,7 @@ bool apply_remote_damage(const std::vector<uint8_t>& ev) {
         return false;
     }
     // VaryStatByAccInputReq takes the generic stat path: at 0 HP the enemy is
-    // only "knocked out", never dead (pieza4-dano-servidor.md §2.d: 53 enemies
+    // only "knocked out", never dead (pieza4-dano-servidor.md Â§2.d: 53 enemies
     // left at 0 HP in the tests, 3 kept fighting). Never below 1 HP; the kill
     // must come from a native blow.
     int64_t amount = std::max(delta, -kMaxRemoteDamage);

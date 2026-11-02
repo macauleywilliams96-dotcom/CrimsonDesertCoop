@@ -56,7 +56,7 @@ enum class EventKind : uint8_t {
     Move = 1,         // MoveActorReq, 514 bytes
     StartAction = 2,  // StartActionReq, 725 bytes
     Rotate = 3,       // RotateActorReq, 176 bytes
-    WallUp = 4,       // UpdateWallUpData, 132 bytes (built from memory)
+    WallUp = 4,       // UpdateWallUpData, 135 bytes in 3479 (built from memory)
     Equip = 5,        // OtherEquipItemAck payload (9 + 6n bytes); sent reliably
     Docking = 6,      // ChangeDockingSocketByFrameEventAck payload (16 bytes): weapon hand/back
     Relay = 7,        // u16 opcode + a server->client message about the sender (HP, buffs...)
