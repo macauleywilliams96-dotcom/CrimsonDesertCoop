@@ -21,6 +21,17 @@ $dist = Join-Path $root 'dist'
 foreach ($f in 'cdmp.asi', 'CoopLauncher.exe') {
     if (-not (Test-Path (Join-Path $bin $f))) { throw "Build first: $f not found in $bin" }
 }
+# Stamp the version into the build (the overlay shows it), rebuild, and push the
+# source that matches the release (GPL).
+if ($Tag -notmatch '^v(\d+\.\d+\.\d+)$') { throw 'Tag must look like v1.2.3' }
+Set-Content -Encoding ascii (Join-Path $root 'VERSION.txt') $Matches[1]
+& (Join-Path $PSScriptRoot 'build.ps1') -Config $Config
+if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+git -C $root add -A
+git -C $root commit -q -m "Release $Tag" -m $Notes
+git -C $root push -q coop HEAD:main
+if ($LASTEXITCODE -ne 0) { throw 'git push failed' }
+
 $offsets = Get-Content (Join-Path $root 'src\mod\game\offsets.h') -Raw
 if ($offsets -notmatch 'kPeTimestamp = 0x([0-9A-Fa-f]{8})') { throw 'kPeTimestamp not found in offsets.h' }
 $gamePe = $Matches[1].ToUpper()

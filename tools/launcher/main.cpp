@@ -163,6 +163,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             }
             if (ok) {
                 std::ofstream(version_file) << tag;
+                MessageBoxW(nullptr, (L"Co-op mod updated to " + widen(tag) + L".").c_str(), kTitle,
+                            MB_ICONINFORMATION);
             } else {
                 MessageBoxW(nullptr, (L"Could not update the co-op mod to " + widen(tag) +
                                       L". Starting with the installed version.").c_str(),

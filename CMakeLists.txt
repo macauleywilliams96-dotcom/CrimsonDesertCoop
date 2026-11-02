@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
-project(CrimsonDesertMultiplayer VERSION 0.2.0 LANGUAGES CXX)
+# The mod version (shown in the overlay) follows the release tag: publish_update.ps1
+# writes VERSION.txt.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" CDMP_VER LIMIT_COUNT 1)
+string(STRIP "${CDMP_VER}" CDMP_VER)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt")
+project(CrimsonDesertMultiplayer VERSION ${CDMP_VER} LANGUAGES CXX)
 
 if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Build with MSVC for x64 (the game is 64-bit Windows only). Use scripts/build.ps1.")
