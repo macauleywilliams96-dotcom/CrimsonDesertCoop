@@ -57,9 +57,15 @@ constexpr uint32_t kStatHP = 0x000F4240;
 constexpr uint32_t kPuppetPlayer = 0xA010F001;
 constexpr size_t kAarSize = 77;
 constexpr size_t kBuffSize = 77;
-constexpr size_t kTargetEntry = 665;  // DoFrameEventReq target entry size
-constexpr size_t kAccessor = 0x1F7;   // FrameEventAccessor: u8 type | u8 slot | u32 hash | u16 id | u32 frame
-constexpr size_t kFirstEntry = 0x203;
+// DoFrameEventReq, build 3479: a 647-byte head (658 for some attacks) then one
+// 677-byte entry per target, the target key first (2976: 0x203 and 665).
+constexpr size_t kTargetEntry = 677;
+constexpr size_t kFirstEntry = 0x287;
+// Build 2976 had the attack (FrameEventAccessor: u8 type | u8 slot | u32 hash |
+// u16 id | u32 frame) at +0x1F7. Not found yet in 3479 (none of the known
+// hashes appear): every blow is the unknown attack (act 0, default damage).
+constexpr size_t kAccessor = 0x1F7;
+constexpr bool kAccessorKnown = false;
 constexpr size_t kGuestHitSize = 17;  // u32 copy | u32 action hash | u32 frame | u8 accessor type | i32 base x1000
 constexpr uint8_t kFlagsClean = 0xF7;  // AttackTargetAck +8: a clean blow
 constexpr uint8_t kFlagsNoDamage = 0xE3;  // frames that never hurt (pieza4-capturas.md §2.1)
@@ -248,6 +254,7 @@ std::vector<uint32_t> targets_of(const uint8_t* p, size_t n) {
 }
 
 uint64_t act_of(const uint8_t* p) {
+    if (!kAccessorKnown) return 0;
     const uint8_t type = p[kAccessor];
     if (type == 1) return act_key(u32_at(p + kAccessor + 9), u32_at(p + kAccessor + 14) << 8 | p[kAccessor + 18]);
     return act_key(u32_at(p + kAccessor + 2), u32_at(p + kAccessor + 8));
@@ -269,6 +276,7 @@ double factor_locked(uint32_t variant) {
 
 // Base HP of an attack on a defence-1.0 enemy, learnt by us; 0 if unknown. Caller holds g_mutex.
 double learnt_base_locked(uint64_t act) {
+    if (act == 0) return 0;  // unknown attack: nothing learnt can apply
     auto a = g_attacks.find(act);
     if (a == g_attacks.end() || a->second.base_votes.empty()) return 0;
     const auto best = std::max_element(a->second.base_votes.begin(), a->second.base_votes.end(),
@@ -701,7 +709,7 @@ void apply_hit(const proto::GameEvent& ev) {
         const bool known_stagger =
             a != g_attacks.end() && a->second.blows >= 2 && a->second.staggers * 10 >= a->second.blows * 8;
         if (a != g_attacks.end()) {
-            no_damage = a->second.no_damage >= 2 && a->second.clean == 0;
+            no_damage = act != 0 && a->second.no_damage >= 2 && a->second.clean == 0;
             ata = a->second.ata;
             if (known_stagger) {
                 aar = a->second.aar;

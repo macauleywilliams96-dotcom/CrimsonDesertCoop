@@ -1827,6 +1827,11 @@ namespace {
 // took 3 corpses before the guest could loot them).
 constexpr uint64_t kLootKeepMs = 120000;
 std::map<uint32_t, uint64_t> g_kept_corpses;  // copy -> when its removal came
+// A dead copy with no loot here: removed once its death has played out, or its
+// corpse stayed on our minimap as a red enemy until the sender's game let go
+// of the real one (live test, build 3479).
+constexpr uint64_t kDeadCopyGoneMs = 6000;
+std::map<uint32_t, uint64_t> g_dead_gone_at;  // copy -> when to remove it
 
 void remove_copy_now(uint32_t copy) {
     g_kept_corpses.erase(copy);
@@ -1933,6 +1938,7 @@ void enemy_on_state(const std::vector<uint8_t>& bytes, uint64_t delay_ms) {
             puppet_inject_s2c(kOpLootDropCharacterRewardListAck, empty, delay_ms + kNoLootAfterMs);
             puppet_inject_s2c(kOpRemoveLootableAck, gone, delay_ms + kNoLootAfterMs);
         }
+        if (!twin) g_dead_gone_at[copy] = now_ms() + delay_ms + kDeadCopyGoneMs;
         if (log_turn(g_died_logged)) {
             log::info("Enemy relay: enemy copy 0x{:08X} died ({})", copy, twin ? "loot from its twin" : "no loot here");
         }
@@ -2013,6 +2019,14 @@ void enemy_on_remove(const std::vector<uint8_t>& bytes) {
 void enemy_kept_corpses_tick() {
     const uint64_t now = now_ms();
     std::vector<uint32_t> done;
+    for (auto it = g_dead_gone_at.begin(); it != g_dead_gone_at.end();) {
+        if (now < it->second) {
+            ++it;
+            continue;
+        }
+        if (g_copies.count(it->first) && !loot_keeps_copy(it->first)) done.push_back(it->first);
+        it = g_dead_gone_at.erase(it);
+    }
     for (const auto& [copy, since] : g_kept_corpses) {
         if (now - since >= kLootKeepMs || !loot_keeps_copy(copy)) done.push_back(copy);
     }
