@@ -743,7 +743,8 @@ DWORD WINAPI worker(LPVOID) {
                   cfg.coop_minimap_icon, cfg.coop_enemies_target_copy, cfg.coop_guest_hits, cfg.coop_guest_hit_stagger,
                   cfg.coop_player_hit_react, cfg.coop_player_hit_lethal);
         net::puppet_set_slide_fix(cfg.coop_slide_fix);
-        log::info("Config: slide fix {}", cfg.coop_slide_fix);
+        net::guest_hits_set_grab_assist(cfg.coop_grab_assist);
+        log::info("Config: slide fix {}, grab assist {}", cfg.coop_slide_fix, cfg.coop_grab_assist);
         log::info("Config: dev clone {} combat {} minimap cycle {} aggro {} enemy relay {} piece4 {} | sniffer {} "
                   "record {} | overlay {}",
                   cfg.dev_clone_hotkeys, cfg.dev_combat_tests, cfg.dev_minimap_cycle, cfg.dev_aggro_test,

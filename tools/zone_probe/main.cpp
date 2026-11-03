@@ -125,6 +125,58 @@ int main(int argc, char** argv) {
         }
         return 0;
     }
+    if (argc > 4 && std::string(argv[2]) == "--window") {
+        // Every message between two times (s, as printed), except Moves.
+        const double from = std::stod(argv[3]), to = std::stod(argv[4]);
+        for (size_t at = 12; at + 24 <= b.size();) {
+            uint64_t t_us;
+            std::memcpy(&t_us, b.data() + at, 8);
+            const uint8_t dir = b[at + 8];
+            uint16_t copied;
+            std::memcpy(&copied, b.data() + at + 12, 2);
+            const uint8_t* data = b.data() + at + 24;
+            at += 24 + copied;
+            const double t = t_us / 1e6;
+            if (at > b.size() || copied < 5 || t < from || t > to) continue;
+            uint16_t op;
+            std::memcpy(&op, data, 2);
+            if (op == 2833 || op == 2834) continue;
+            const bool full = argc > 5 && op == std::stoul(argv[5]);
+            if (argc > 5 && !full) continue;
+            std::printf("%9.3f %s %5u %5u |", t, dir == 1 ? "C>S" : "S>C", op, copied - 5);
+            for (size_t i = 5; i < (full ? copied : std::min<size_t>(copied, 5 + 48)); ++i) std::printf(" %02X", data[i]);
+            std::printf("\n");
+        }
+        return 0;
+    }
+    if (argc > 2 && std::string(argv[2]) == "--rare") {
+        // Opcodes seen at most 12 times in either direction, each with its
+        // times and first bytes: a grab's own messages stand out.
+        std::map<std::pair<uint8_t, uint16_t>, std::vector<std::pair<double, std::vector<uint8_t>>>> by;
+        for (size_t at = 12; at + 24 <= b.size();) {
+            uint64_t t_us;
+            std::memcpy(&t_us, b.data() + at, 8);
+            const uint8_t dir = b[at + 8];
+            uint16_t copied;
+            std::memcpy(&copied, b.data() + at + 12, 2);
+            const uint8_t* data = b.data() + at + 24;
+            at += 24 + copied;
+            if (at > b.size() || copied < 5) continue;
+            uint16_t op;
+            std::memcpy(&op, data, 2);
+            auto& v = by[{dir, op}];
+            if (v.size() < 13) v.push_back({t_us / 1e6, std::vector<uint8_t>(data + 5, data + std::min<size_t>(copied, 5 + 40))});
+        }
+        for (const auto& [k, v] : by) {
+            if (v.size() > 12) continue;
+            for (const auto& [t, p] : v) {
+                std::printf("%9.3f %s %5u len? |", t, k.first == 1 ? "C>S" : "S>C", k.second);
+                for (uint8_t x : p) std::printf(" %02X", x);
+                std::printf("\n");
+            }
+        }
+        return 0;
+    }
     if (argc > 3 && std::string(argv[2]) == "--move-bytes") {
         // Our on-foot MoveActorReqs of one actor: each run of Moves whose
         // non-float bytes (0x30-0x44, 0x6C-0xB4, 0xD0-0xEE) differ from the

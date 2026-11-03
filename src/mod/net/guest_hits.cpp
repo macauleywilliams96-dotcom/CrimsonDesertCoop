@@ -236,6 +236,107 @@ struct Finishing {  // a lethal blow sent as 1 HP + collision, waiting for the d
 std::map<uint32_t, Finishing> g_finishing;
 uint32_t g_next_instance = 0;
 uint64_t g_applied = 0, g_learnt_log = 0, g_sent_log = 0, g_refused_log = 0;
+
+// ---- grabs on the other player's enemies' copies (friend's capture, 3 Nov):
+// a grab is an attack whose blow the server answers 12-15 ms later with
+// CatchActionResultAck (u32 catcher | u32 victim | "B_EnemyCatch_00" x2 | ...
+// | u8 counter), which starts the paired animation; ReleaseCatchResultAck ends
+// it. A copy is not on our server, so no answer comes: we give it ourselves
+// for the attacks that caught real enemies (seeds from the capture, then
+// learnt), and release it later.
+constexpr uint16_t kOpCatchActionResultAck = 2308;
+constexpr uint16_t kOpReleaseCatchResultAck = 2237;
+constexpr size_t kCatchSize = 85, kReleaseSize = 249;
+constexpr uint64_t kCatchAfterBlowMs = 60, kReleaseAfterMs = 2500, kCatchRepeatMs = 3000;
+Bytes hex_bytes(const char* s) {
+    Bytes b;
+    for (; s[0] && s[1]; s += (s[2] == ' ' ? 3 : 2)) b.push_back(static_cast<uint8_t>(std::stoul(std::string(s, 2), nullptr, 16)));
+    return b;
+}
+Bytes g_catch_template = hex_bytes(
+    "01 00 10 A0 9D 03 10 B0 00 0F 00 00 00 42 5F 45 6E 65 6D 79 43 61 74 63 68 5F 30 30 00 0F 00 00 00 42 5F 45 6E "
+    "65 6D 79 43 61 74 63 68 5F 30 30 00 01 00 00 00 00 00 00 00 CE CC 4C 3E 6B A8 85 23 94 82 52 64 54 24 5D B7 00 "
+    "00 00 01 00 01 00 00 00 00 00 2F");
+Bytes g_release_template = hex_bytes(
+    "01 00 10 A0 9D 03 10 B0 C2 63 22 C6 26 45 12 44 A3 56 60 C5 00 00 00 00 AB 5C 5D 3F 00 00 00 00 86 96 00 3F 00 "
+    "00 80 3F 00 00 80 3F 00 00 80 3F 27 52 1F 3F C4 40 AF 3C 80 56 1B 3F 00 00 00 00 19 E4 CE BE 00 00 00 00 FF FF "
+    "FF FF FF FF FF FF 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80 3F 00 00 80 "
+    "3F 00 00 80 3F 00 00 80 3F 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 "
+    "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 80 3F 00 00 80 3F 00 00 80 3F 00 00 80 3F 00 "
+    "00 00 00 AB 5C 5D 3F 00 00 00 00 86 96 00 3F C2 63 22 C6 26 45 12 44 A3 56 60 C5 00 00 00 00 9B 4E 02 00 00 00 "
+    "00 00 00 00 00 00 00 01 37 E7 C0 1F 05 D7 76 32 CE CC 4C 3E 00 00 00 00 05 00 00");
+// Each grab attack's own catch: +57 f32 and +61 u32 name the grab move
+// (clothesline, takedown...). Seeds from the capture's six catches; the
+// real ones our server sends replace them (and add new attacks).
+std::map<uint32_t, Bytes> g_catch_by_hash = [] {
+    std::map<uint32_t, Bytes> m;
+    const struct {
+        uint32_t hash, move;
+        float f;
+    } seeds[] = {{0x9D9C4952u, 0x2385A86Bu, 0.2f},
+                 {0xA3976741u, 0x2385A86Bu, 0.2f},
+                 {0x83AFCB35u, 0x4B946ADBu, 0.2f},
+                 {0x8C9C8FEAu, 0x1E5D5F57u, 0.2f},
+                 {0x7C5DB9E7u, 0x362E25B3u, 0.1f}};
+    for (const auto& s : seeds) {
+        Bytes b = g_catch_template;
+        if (b.size() != kCatchSize) continue;
+        std::memcpy(b.data() + 57, &s.f, 4);
+        std::memcpy(b.data() + 61, &s.move, 4);
+        m[s.hash] = std::move(b);
+    }
+    return m;
+}();
+std::atomic<bool> g_grab_assist{false};
+uint8_t g_catch_counter = 0x2F;
+struct OwnBlow {
+    uint64_t act, ms;
+};
+OwnBlow g_last_own_blow{};
+std::map<uint32_t, uint64_t> g_grabbed;  // copy -> when we gave its catch (release due after kReleaseAfterMs)
+uint64_t g_grab_log = 0;
+
+std::string act_text(uint64_t act);
+
+// Caller holds g_mutex. Our catch of `copy`, as our server would have sent it.
+void give_catch_locked(uint32_t own, uint32_t copy, uint64_t act) {
+    if (auto g = g_grabbed.find(copy); g != g_grabbed.end() && now_ms() - g->second < kCatchRepeatMs) return;
+    const auto c = g_catch_by_hash.find(static_cast<uint32_t>(act >> 32));
+    if (c == g_catch_by_hash.end()) return;
+    Bytes ack = c->second;
+    std::memcpy(ack.data(), &own, 4);
+    std::memcpy(ack.data() + 4, &copy, 4);
+    ack.back() = ++g_catch_counter;
+    puppet_inject_s2c(kOpCatchActionResultAck, ack);
+    g_grabbed[copy] = now_ms();
+    if (g_grab_log++ < 40) log::info("Grab: our attack {} caught the copy 0x{:08X}: catch given", act_text(act), copy);
+}
+
+// Network thread: release the copies we caught, at the copy's place.
+void release_grabs_locked(uint32_t own) {
+    for (auto it = g_grabbed.begin(); it != g_grabbed.end();) {
+        if (now_ms() - it->second < kReleaseAfterMs) {
+            ++it;
+            continue;
+        }
+        const uint32_t copy = it->first;
+        it = g_grabbed.erase(it);
+        if (g_release_template.size() != kReleaseSize) continue;
+        Bytes rel = g_release_template;
+        float old[3];
+        std::memcpy(old, rel.data() + 8, sizeof old);
+        std::memcpy(rel.data(), &own, 4);
+        std::memcpy(rel.data() + 4, &copy, 4);
+        if (const auto at = game::actor_world_position(copy)) {
+            const float now_at[3] = {at->x, at->y, at->z};
+            for (size_t i = 0; i + 12 <= rel.size(); ++i) {
+                if (std::memcmp(rel.data() + i, old, 12) == 0) std::memcpy(rel.data() + i, now_at, 12);
+            }
+        }
+        puppet_inject_s2c(kOpReleaseCatchResultAck, rel);
+        if (g_grab_log++ < 40) log::info("Grab: released the copy 0x{:08X}", copy);
+    }
+}
 // Network thread (apply_hit): the bounds above.
 RateLimit g_hit_rate{15.0, 15.0};
 std::map<uint32_t, uint64_t> g_last_hit;  // enemy -> when the other player's last blow on it was applied
@@ -544,8 +645,12 @@ void guest_hits_observe_c2s(const uint8_t* packet, size_t size) {
     std::lock_guard lock(g_mutex);
     g_pending.push_back({act, targets, now_ms()});
     while (g_pending.size() > 32) g_pending.pop_front();
+    g_last_own_blow = {act, now_ms()};
     for (uint32_t target : targets) {
         if (!g_enabled || !is_enemy_copy_key(target)) continue;
+        if (g_grab_assist.load() && act && g_catch_by_hash.count(static_cast<uint32_t>(act >> 32))) {
+            give_catch_locked(own, target, act);
+        }
         // A copy of the other player's enemy: tell them. Our own base for this
         // attack if we learnt it (our gear), else 0 and they use theirs.
         const int32_t base = static_cast<int32_t>(std::lround(learnt_base_locked(act) * 1000));
@@ -569,7 +674,7 @@ void guest_hits_observe_s2c(const uint8_t* packet, size_t size) {
     uint16_t op;
     std::memcpy(&op, packet, 2);
     if (op != kOpAttackTargetAck && op != kOpApplyActionRestrictionAck && op != kOpOnPostBuffDamagedAck &&
-        op != kOpNotifyHandleFatalAck && op != kOpApplyBuffAck) {
+        op != kOpNotifyHandleFatalAck && op != kOpApplyBuffAck && op != kOpCatchActionResultAck) {
         return;
     }
     const uint8_t* p = packet + 5;
@@ -577,6 +682,22 @@ void guest_hits_observe_s2c(const uint8_t* packet, size_t size) {
     const uint32_t own = capture_own_player_key();
     if (!own) return;
     std::lock_guard lock(g_mutex);
+    if (op == kOpCatchActionResultAck) {
+        // Our server's real catch (never one we gave: those name a copy):
+        // its blow's attack is a grab; keep its counter going.
+        if (n != kCatchSize || u32_at(p) != own || is_enemy_copy_key(u32_at(p + 4))) return;
+        g_catch_counter = p[n - 1];
+        const uint64_t act = g_last_own_blow.act;
+        if (act && now_ms() - g_last_own_blow.ms <= kCatchAfterBlowMs) {
+            const bool fresh = !g_catch_by_hash.count(static_cast<uint32_t>(act >> 32));
+            g_catch_by_hash[static_cast<uint32_t>(act >> 32)] = Bytes(p, p + n);
+            if (fresh) {
+                log::info("Grab: learnt a grab attack {} (move {:08X}; it caught enemy 0x{:08X})", act_text(act),
+                          u32_at(p + 61), u32_at(p + 4));
+            }
+        }
+        return;
+    }
     switch (op) {
         case kOpAttackTargetAck: on_attack_target(p, n, own); break;
         case kOpApplyActionRestrictionAck: on_restriction(p, n, own); break;
@@ -599,6 +720,7 @@ std::vector<proto::GameEvent> guest_hits_take_events() {
     }
     for (const auto& ev : due) apply_hit(ev);
     std::lock_guard lock(g_mutex);
+    if (const uint32_t own = capture_own_player_key(); own && !g_grabbed.empty()) release_grabs_locked(own);
     // Network thread, every loop: lethal blows whose collision did not kill.
     for (auto it = g_finishing.begin(); it != g_finishing.end();) {
         if (now_ms() - it->second.ms < kFinishFallbackMs) {
@@ -842,6 +964,13 @@ void guest_hits_on_event(const proto::GameEvent& ev, uint64_t delay_ms) {
     if (!g_enabled || ev.kind != proto::EventKind::GuestHit) return;
     std::lock_guard lock(g_mutex);
     if (g_delayed.size() < 128) g_delayed.push_back({now_ms() + delay_ms, ev});
+}
+
+void guest_hits_set_grab_assist(bool on) {
+    g_grab_assist = on;
+    log::info("Co-op: grabs on the other player's enemies' copies {} (templates {}/{} B, {} grab attacks)",
+              on ? "get their catch (experimental)" : "are not helped", g_catch_template.size(),
+              g_release_template.size(), g_catch_by_hash.size());
 }
 
 }  // namespace cdmp::net

@@ -86,6 +86,7 @@ struct Config {
     // ...and stagger them (restriction + hit buff, pieza4-tambaleo.md):
     // experimental until a live test shows the stagger.
     bool coop_guest_hit_stagger = false;
+    bool coop_grab_assist = false;   // give the catch for our grabs on enemy copies
     // Our player reacts (stagger, knock-down) to the other player's enemies'
     // blows on our copy over there: experimental until tested.
     bool coop_player_hit_react = false;

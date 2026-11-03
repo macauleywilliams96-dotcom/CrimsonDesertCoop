@@ -28,6 +28,8 @@
 namespace cdmp::net {
 
 void guest_hits_set_enabled(bool on, bool stagger);
+// Grabs on enemy copies: give the catch our server cannot (grab attacks learnt from real catches).
+void guest_hits_set_grab_assist(bool on);
 // [coop] finish_arrow: a lethal blow of the other player ends with our usual
 // arrow (a normal death animation) instead of the old collision.
 void guest_hits_set_finish_arrow(bool on);

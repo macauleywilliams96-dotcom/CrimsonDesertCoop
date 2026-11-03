@@ -161,6 +161,7 @@ Config load_config(const std::wstring& ini_path) {
     c.coop_enemies_target_copy = read_uint(ini_path, L"coop", L"enemies_target_copy", 0) != 0;
     c.coop_guest_hits = read_uint(ini_path, L"coop", L"guest_hits", 0) != 0;
     c.coop_guest_hit_stagger = read_uint(ini_path, L"coop", L"guest_hit_stagger", 0) != 0;
+    c.coop_grab_assist = read_uint(ini_path, L"coop", L"grab_assist", 0) != 0;
     c.coop_player_hit_react = read_uint(ini_path, L"coop", L"player_hit_react", 0) != 0;
     c.coop_player_hit_lethal = read_uint(ini_path, L"coop", L"player_hit_lethal", 0) != 0;
     c.coop_time_sync = static_cast<int>(std::min(read_uint(ini_path, L"coop", L"time_sync", 0), 2u));
