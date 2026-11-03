@@ -293,14 +293,22 @@ struct OwnBlow {
     uint64_t act, ms;
 };
 OwnBlow g_last_own_blow{};
-std::map<uint32_t, uint64_t> g_grabbed;  // copy -> when we gave its catch (release due after kReleaseAfterMs)
+struct Grabbed {
+    uint64_t ms;      // when we gave its catch (release due after kReleaseAfterMs)
+    uint32_t catcher;  // our player (guest side) or their copy (host side)
+};
+std::map<uint32_t, Grabbed> g_grabbed;  // victim -> its catch
 uint64_t g_grab_log = 0;
 
 std::string act_text(uint64_t act);
 
-// Caller holds g_mutex. Our catch of `copy`, as our server would have sent it.
+// Caller holds g_mutex. The catch of `copy` by `own`, as a server would send it.
+// Guest side the victim is the host's enemy copy (our player grabs; the copy,
+// driven by the host, does not play its part: 3 Nov test). Host side the
+// catcher is the guest's copy and the victim our real enemy, whose part our
+// client plays and relays to the guest's copy of it.
 void give_catch_locked(uint32_t own, uint32_t copy, uint64_t act) {
-    if (auto g = g_grabbed.find(copy); g != g_grabbed.end() && now_ms() - g->second < kCatchRepeatMs) return;
+    if (auto g = g_grabbed.find(copy); g != g_grabbed.end() && now_ms() - g->second.ms < kCatchRepeatMs) return;
     const auto c = g_catch_by_hash.find(static_cast<uint32_t>(act >> 32));
     if (c == g_catch_by_hash.end()) return;
     Bytes ack = c->second;
@@ -308,18 +316,20 @@ void give_catch_locked(uint32_t own, uint32_t copy, uint64_t act) {
     std::memcpy(ack.data() + 4, &copy, 4);
     ack.back() = ++g_catch_counter;
     puppet_inject_s2c(kOpCatchActionResultAck, ack);
-    g_grabbed[copy] = now_ms();
-    if (g_grab_log++ < 40) log::info("Grab: our attack {} caught the copy 0x{:08X}: catch given", act_text(act), copy);
+    g_grabbed[copy] = {now_ms(), own};
+    if (g_grab_log++ < 40) {
+        log::info("Grab: attack {} of 0x{:08X} caught 0x{:08X}: catch given", act_text(act), own, copy);
+    }
 }
 
-// Network thread: release the copies we caught, at the copy's place.
-void release_grabs_locked(uint32_t own) {
+// Network thread: release the victims we caught, at the victim's place.
+void release_grabs_locked() {
     for (auto it = g_grabbed.begin(); it != g_grabbed.end();) {
-        if (now_ms() - it->second < kReleaseAfterMs) {
+        if (now_ms() - it->second.ms < kReleaseAfterMs) {
             ++it;
             continue;
         }
-        const uint32_t copy = it->first;
+        const uint32_t copy = it->first, own = it->second.catcher;
         it = g_grabbed.erase(it);
         if (g_release_template.size() != kReleaseSize) continue;
         Bytes rel = g_release_template;
@@ -334,7 +344,7 @@ void release_grabs_locked(uint32_t own) {
             }
         }
         puppet_inject_s2c(kOpReleaseCatchResultAck, rel);
-        if (g_grab_log++ < 40) log::info("Grab: released the copy 0x{:08X}", copy);
+        if (g_grab_log++ < 40) log::info("Grab: released 0x{:08X} (caught by 0x{:08X})", copy, own);
     }
 }
 // Network thread (apply_hit): the bounds above.
@@ -720,7 +730,7 @@ std::vector<proto::GameEvent> guest_hits_take_events() {
     }
     for (const auto& ev : due) apply_hit(ev);
     std::lock_guard lock(g_mutex);
-    if (const uint32_t own = capture_own_player_key(); own && !g_grabbed.empty()) release_grabs_locked(own);
+    if (!g_grabbed.empty()) release_grabs_locked();
     // Network thread, every loop: lethal blows whose collision did not kill.
     for (auto it = g_finishing.begin(); it != g_finishing.end();) {
         if (now_ms() - it->second.ms < kFinishFallbackMs) {
@@ -807,6 +817,11 @@ void apply_hit(const proto::GameEvent& ev) {
     }
     g_last_hit[enemy] = now;
     g_last_act[enemy] = act;
+    if (g_grab_assist.load() && type != 1) {
+        // Their grab: our client plays it on our real enemy, their copy the catcher.
+        std::lock_guard lock(g_mutex);
+        if (g_catch_by_hash.count(hash)) give_catch_locked(kPuppetPlayer, enemy, act);
+    }
     enemy_note_guest_blow(enemy);  // fighting us now: the guest started it
     aggro_request_target_on_copy(enemy);  // and it turns on the one who hit it
     if (g_last_hit.size() > 256) {
