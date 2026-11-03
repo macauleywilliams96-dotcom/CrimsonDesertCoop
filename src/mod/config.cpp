@@ -155,6 +155,7 @@ Config load_config(const std::wstring& ini_path) {
     c.coop_offset_m = read_metres(ini_path, L"coop", L"offset_m", c.coop_offset_m);
     c.coop_horse = read_uint(ini_path, L"coop", L"horse", 0) != 0;
     c.coop_equip = read_uint(ini_path, L"coop", L"equip", 1) != 0;
+    c.coop_slide_fix = read_uint(ini_path, L"coop", L"slide_fix", 0) != 0;
     c.coop_damage = read_uint(ini_path, L"coop", L"damage", 0) != 0;
     c.coop_map_pin = read_uint(ini_path, L"coop", L"map_pin", 1) != 0;
     c.coop_enemies_target_copy = read_uint(ini_path, L"coop", L"enemies_target_copy", 0) != 0;

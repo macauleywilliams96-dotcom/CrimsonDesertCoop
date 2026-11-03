@@ -61,11 +61,11 @@ constexpr size_t kBuffSize = 77;
 // 677-byte entry per target, the target key first (2976: 0x203 and 665).
 constexpr size_t kTargetEntry = 677;
 constexpr size_t kFirstEntry = 0x287;
-// Build 2976 had the attack (FrameEventAccessor: u8 type | u8 slot | u32 hash |
-// u16 id | u32 frame) at +0x1F7. Not found yet in 3479 (none of the known
-// hashes appear): every blow is the unknown attack (act 0, default damage).
-constexpr size_t kAccessor = 0x1F7;
-constexpr bool kAccessorKnown = false;
+// The attack (FrameEventAccessor: u8 type | u8 slot | u32 hash | u16 id |
+// u32 frame): +0x1FB in 3479 (2976: +0x1F7). Found 3 Nov: the hash at +0x1FD
+// is the action our player had just started (StartActionReq +8) at each blow.
+constexpr size_t kAccessor = 0x1FB;
+constexpr bool kAccessorKnown = true;
 constexpr size_t kGuestHitSize = 17;  // u32 copy | u32 action hash | u32 frame | u8 accessor type | i32 base x1000
 constexpr uint8_t kFlagsClean = 0xF7;  // AttackTargetAck +8: a clean blow
 constexpr uint8_t kFlagsNoDamage = 0xE3;  // frames that never hurt (pieza4-capturas.md §2.1)

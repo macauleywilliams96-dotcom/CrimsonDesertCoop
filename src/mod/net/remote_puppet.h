@@ -115,5 +115,7 @@ void puppet_want_rope_bend(bool on);
 void puppet_set_horse_enabled(bool on);
 // Apply the sender's equipment changes ([coop] equip=1; experimental).
 void puppet_set_equip_enabled(bool on);
+// Slide fix: place the copy at its moves' position when it plays a move in place.
+void puppet_set_slide_fix(bool on);
 
 }  // namespace cdmp::net

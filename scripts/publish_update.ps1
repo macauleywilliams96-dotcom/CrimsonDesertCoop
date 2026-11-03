@@ -28,7 +28,7 @@ Set-Content -Encoding ascii (Join-Path $root 'VERSION.txt') $Matches[1]
 & (Join-Path $PSScriptRoot 'build.ps1') -Config $Config
 if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 git -C $root add -A
-git -C $root commit -q -m "Release $Tag" -m $Notes
+git -C $root commit -q -m "Release $Tag" -m $Notes -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git -C $root push -q coop HEAD:main
 if ($LASTEXITCODE -ne 0) { throw 'git push failed' }
 

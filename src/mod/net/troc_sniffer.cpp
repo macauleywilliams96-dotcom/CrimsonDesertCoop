@@ -178,6 +178,8 @@ bool read_post_args(uint64_t rsp, uint8_t& channel, uint16_t& flags) {
     }
 }
 
+const std::string& name_for(uint16_t op);
+
 void on_post_packet(safetyhook::Context& ctx) {
     capture(Dir::ClientToServer, static_cast<uint32_t>(ctx.r8),
             reinterpret_cast<const uint8_t*>(ctx.r9), ctx.rsp);
@@ -205,6 +207,29 @@ void on_post_packet(safetyhook::Context& ctx) {
         std::memcpy(f, w + 5, sizeof f);
         log::info("Weather: rain {:.2f} snow {:.2f} temp {:.1f} C | cloud {:.3f} fog {:.3f} wind {:.2f}", f[0], f[1],
                   f[2], f[3], f[4], f[5]);
+    }
+    // Grabs and takedowns on the other player's enemies (guest test, 3 Nov):
+    // every packet of ours that names an enemy copy, except Moves and hits.
+    if (uint8_t pk[5 + 1024]; op != 2833 && op != 3030) {
+        uint16_t len = 0;
+        if (guarded_copy(pk, reinterpret_cast<const void*>(ctx.r9), 5)) std::memcpy(&len, pk + 3, 2);
+        const size_t n = std::min<size_t>(5 + len, sizeof pk);
+        if (len && guarded_copy(pk, reinterpret_cast<const void*>(ctx.r9), n)) {
+            for (size_t i = 5; i + 4 <= n; ++i) {
+                uint32_t k;
+                std::memcpy(&k, pk + i, 4);
+                if ((k >> 16) != 0xB01F || (k & 0xFFFF) == 0 || (k & 0xFFFF) > 0x7FFF) continue;
+                static std::map<uint16_t, uint32_t> seen;
+                const uint32_t c = ++seen[op];
+                if (c <= 30 || c % 50 == 0) {
+                    std::string hex;
+                    for (size_t j = 5; j < std::min<size_t>(n, 5 + 48); ++j) hex += std::format("{:02X} ", pk[j]);
+                    log::info("Copy contact: {} ({}, {} B) names copy 0x{:08X} at +{} (#{}) | {}", name_for(op), op,
+                              len, k, i - 5, c, hex);
+                }
+                break;
+            }
+        }
     }
     if (op == kOpGameLoadingStartReq) {
         g_loading_start_ms.store(GetTickCount64(), std::memory_order_release);

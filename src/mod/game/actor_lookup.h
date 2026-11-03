@@ -19,5 +19,8 @@ std::optional<proto::Vec3> actor_world_position(uint32_t key);
 std::optional<proto::Quat> actor_world_rotation(uint32_t key);
 // Both with one actor lookup (the host samples up to 48 enemies twice a second).
 bool actor_world_transform(uint32_t key, proto::Vec3& pos, proto::Quat& rot);
+// Writes a world position into the actor's TransformSync, only within its
+// current 1000 m sector (the copy's slide fix). False if anything is missing.
+bool actor_set_world_position(uint32_t key, const proto::Vec3& pos);
 
 }  // namespace cdmp::game

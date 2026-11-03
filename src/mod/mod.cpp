@@ -742,6 +742,8 @@ DWORD WINAPI worker(LPVOID) {
                   cfg.coop_offset_m, cfg.coop_horse, cfg.coop_equip, cfg.coop_damage, cfg.coop_map_pin,
                   cfg.coop_minimap_icon, cfg.coop_enemies_target_copy, cfg.coop_guest_hits, cfg.coop_guest_hit_stagger,
                   cfg.coop_player_hit_react, cfg.coop_player_hit_lethal);
+        net::puppet_set_slide_fix(cfg.coop_slide_fix);
+        log::info("Config: slide fix {}", cfg.coop_slide_fix);
         log::info("Config: dev clone {} combat {} minimap cycle {} aggro {} enemy relay {} piece4 {} | sniffer {} "
                   "record {} | overlay {}",
                   cfg.dev_clone_hotkeys, cfg.dev_combat_tests, cfg.dev_minimap_cycle, cfg.dev_aggro_test,

@@ -374,7 +374,7 @@ struct PartyBlock {
 
 // ClientPartyActorComponent (vf11 0x21D8020), anchored on the actor's own key
 // in its member list: u64 number (0x201_xxxxxxxx) | u32 leader | u32 | 12 B |
-// u8 | u32 n | n keys | u32 formation | u32 own index | u8 | u32 m | m keys | u32 leader.
+// u8 | u32 n | n keys | u32 formation | u32 own index (or -1) | u8 | u32 m | m keys | u32 leader.
 std::optional<PartyBlock> find_party(const Bytes& pl, uint32_t own) {
     const size_t len = pl.size();
     for (size_t pos = 8; pos + 4 <= len; ++pos) {
@@ -385,7 +385,9 @@ std::optional<PartyBlock> find_party(const Bytes& pl, uint32_t own) {
             const uint32_t n = u32_at(pl.data() + start_s - 4);
             if (!(idx < n && n <= 100)) continue;
             const size_t e = start_s + 4 * n;
-            if (e + 13 > len || u32_at(pl.data() + e + 4) != idx) continue;
+            // 3479 leaves the own index at -1 in members too (camp 0x8F0EB0A5, 2 Nov).
+            const uint32_t own_index = e + 13 <= len ? u32_at(pl.data() + e + 4) : 0;
+            if (e + 13 > len || (own_index != idx && own_index != 0xFFFFFFFFu)) continue;
             const uint32_t m = u32_at(pl.data() + e + 9);
             if (m > 100 || e + 13 + 4 * m + 4 > len) continue;
             const size_t start = start_s - 33;
@@ -514,8 +516,17 @@ bool sanitize_load(Bytes& load, uint32_t copy, std::string& why) {
     // 5) nothing of our world may be left
     size_t at = 0;
     uint32_t left = 0;
+    int mates = 0;
     {
         std::lock_guard lock(g_mutex);
+        // A camp member still names its leader (aggro list, group slot): the
+        // leader's copy instead when it was copied (camp 0x8F0EB0A5, 2 Nov).
+        for (size_t i = 5; i + 4 <= load.size(); ++i) {
+            if (auto c = g_sent.find(u32_at(load.data() + i)); c != g_sent.end() && c->second != copy) {
+                std::memcpy(load.data() + i, &c->second, 4);
+                ++mates;
+            }
+        }
         left = residual_key_locked(load, 5, copy, &at);
     }
     if (left) {
@@ -524,7 +535,8 @@ bool sanitize_load(Bytes& load, uint32_t copy, std::string& why) {
     }
     why = std::format("parent 0x{:08X} and {} children removed, {}, Target+198 x{}{}", tail->parent,
                       tail->children.size(), party, target,
-                      docked ? std::format(", {} docked gimmick(s) removed", docked) : std::string());
+                      docked ? std::format(", {} docked gimmick(s) removed", docked) : std::string()) +
+          (mates ? std::format(", {} campmate key(s) mapped", mates) : std::string());
     return true;
 }
 

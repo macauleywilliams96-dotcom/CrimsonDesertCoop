@@ -114,4 +114,19 @@ bool actor_world_transform(uint32_t key, proto::Vec3& pos, proto::Quat& rot) {
     return true;
 }
 
+bool actor_set_world_position(uint32_t key, const proto::Vec3& pos) {
+    auto actor = find_actor(key);
+    if (!actor) return false;
+    auto components = read_ptr(*actor + off::kActor_ComponentTable);
+    if (!components) return false;
+    auto ts = read_ptr(*components + kComponents_TransformSync);
+    if (!ts) return false;
+    int16_t sector[2];
+    if (!safe_read(*ts + kTransformSync_Sector, sector, sizeof sector)) return false;
+    const float p[3] = {pos.x - sector[0] * kSectorSize, pos.y, pos.z - sector[1] * kSectorSize};
+    // Only inside this sector (with a margin): no sector change from here.
+    if (p[0] < -50.0f || p[0] > kSectorSize + 50.0f || p[2] < -50.0f || p[2] > kSectorSize + 50.0f) return false;
+    return safe_write(*ts + kTransformSync_Position, p, sizeof p);
+}
+
 }  // namespace cdmp::game

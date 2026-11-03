@@ -33,12 +33,26 @@ bool guarded_copy(void* out, const void* src, size_t size) {
     }
 }
 
+bool pages_writable(uintptr_t addr, size_t size) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<LPCVOID>(addr), &mbi, sizeof mbi) == 0 || mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) return false;
+    if (!(mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE))) return false;
+    return addr + size <= reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+}
+
 }  // namespace
 
 bool safe_read(uintptr_t addr, void* out, size_t size) {
     if (addr < kMinAddress || addr > kMaxAddress - size) return false;
     if (!pages_readable(addr, size)) return false;
     return guarded_copy(out, reinterpret_cast<const void*>(addr), size);
+}
+
+bool safe_write(uintptr_t addr, const void* in, size_t size) {
+    if (addr < kMinAddress || addr > kMaxAddress - size) return false;
+    if (!pages_writable(addr, size)) return false;
+    return guarded_copy(reinterpret_cast<void*>(addr), in, size);
 }
 
 std::optional<uintptr_t> read_ptr(uintptr_t addr) {

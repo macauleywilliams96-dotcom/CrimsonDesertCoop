@@ -62,6 +62,7 @@ struct Config {
     bool coop_horse = false;       // the other player's horse + mount/dismount fixes
     // Works since the copy got its own character number (live test 3).
     bool coop_equip = true;        // relay equipment changes
+    bool coop_slide_fix = false;   // experimental: had no effect in the 3 Nov echo test
     // Mirrored damage: each world keeps its enemies; hits by the other player
     // are applied to our enemy of the same type nearest to theirs. Off by
     // default: it lets the other side hurt our world's NPCs (security review

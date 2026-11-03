@@ -744,6 +744,19 @@ uint64_t action_due(uint64_t due) {
     return due;
 }
 uint64_t move_hold_for(uint64_t delay_ms) { return std::min(delay_ms, kHoldMs); }
+
+// Slide fix (3 Nov echo test): during a slide the copy plays the animation in
+// place and ignores its Moves, then snaps to the end. Each on-foot Move's
+// position with the time it should be drawn; while the copy stands still but
+// those positions run away from it, the drawn one is written into the copy.
+struct SlideSample {
+    uint64_t draw_ms;
+    float pos[3];
+};
+std::mutex g_slide_mutex;
+std::deque<SlideSample> g_slide_samples;
+std::atomic<bool> g_slide_fix{false};
+uint64_t g_slide_writes = 0, g_slide_runs = 0;
 // Until the client's buffer reaches the action's (shifted) timestamp at ack+ts_at.
 uint64_t action_hold_for(const Bytes& ack, size_t ts_at, uint64_t delay_ms) {
     if (!capture_game_clock_trusted() || ack.size() < ts_at + 8) return delay_ms;
@@ -1843,7 +1856,15 @@ void puppet_event(const proto::GameEvent& ev, int64_t ts_shift_ms, uint64_t dela
         if (ack->size() >= off::kMvTs + 8) std::memcpy(&ts, ack->data() + off::kMvTs, 8);
         if (ts && last_kept_ts && ts > last_kept_ts && ts - last_kept_ts < kMinMoveSpacingMs) return;
         last_kept_ts = ts;
-        enqueue_at(make_packet(ack_op, *ack), movement_due(now + move_hold), /*movement=*/true);
+        const uint64_t due = movement_due(now + move_hold);
+        if (ev.kind == proto::EventKind::Move && u32_at(payload, off::kMvParent) == 0xFFFFFFFFu) {
+            SlideSample s{due + kClientRenderDelayMs, {}};
+            std::memcpy(s.pos, payload.data() + off::kMvPos, sizeof s.pos);
+            std::lock_guard lock(g_slide_mutex);
+            g_slide_samples.push_back(s);
+            while (g_slide_samples.size() > 64) g_slide_samples.pop_front();
+        }
+        enqueue_at(make_packet(ack_op, *ack), due, /*movement=*/true);
     } else {
         g_action_hold = action_hold_for(*ack, ev.kind == proto::EventKind::StartAction ? off::sa_md(off::kMvTs) + 1 : 0x9C, delay_ms);
         const uint64_t due = action_due(now + g_action_hold);
@@ -2040,7 +2061,69 @@ std::string rope_slot_text(uint32_t key) {
 
 }  // namespace
 
+namespace {
+
+// See SlideSample. A run starts after the copy trails its drawn Move position
+// by over kSlideStartM for kSlideStartMs, and ends once the game moves the
+// copy itself again (it is no longer where we put it) and it is close.
+constexpr float kSlideStartM = 0.8f, kSlideMaxM = 15.0f, kSlideEndM = 0.5f;
+constexpr uint64_t kSlideStartMs = 120, kSlideFreshMs = 300;
+
+void slide_fix_tick() {
+    static uint64_t far_since = 0;
+    static bool run = false;
+    static float written[3] = {};
+    if (!g_slide_fix.load() || !puppet_spawned()) return;
+    const uint64_t now = steady_ms();
+    float target[3];
+    {
+        std::lock_guard lock(g_slide_mutex);
+        const SlideSample* drawn = nullptr;
+        for (const SlideSample& s : g_slide_samples) {
+            if (s.draw_ms <= now) drawn = &s;
+        }
+        if (!drawn || now - drawn->draw_ms > kSlideFreshMs) {
+            run = false;
+            far_since = 0;
+            return;
+        }
+        std::memcpy(target, drawn->pos, sizeof target);
+    }
+    const auto copy = game::actor_world_position(kPuppetPlayer);
+    if (!copy) return;
+    const float dist = std::hypot(copy->x - target[0], copy->z - target[2]);
+    if (run) {
+        const bool game_moved = std::hypot(copy->x - written[0], copy->z - written[2]) > 0.05f;
+        if ((game_moved && dist < kSlideEndM) || dist > kSlideMaxM) {
+            run = false;
+            far_since = 0;
+            return;
+        }
+    } else {
+        if (dist < kSlideStartM || dist > kSlideMaxM) {
+            far_since = 0;
+            return;
+        }
+        if (!far_since) far_since = now;
+        if (now - far_since < kSlideStartMs) return;
+        run = true;
+        if (++g_slide_runs <= 20) {
+            log::info("Puppet: slide fix: the copy stands {:.1f} m behind its moves; placing it ({} runs)", dist,
+                      g_slide_runs);
+        }
+    }
+    if (game::actor_set_world_position(kPuppetPlayer, {target[0], target[1], target[2]})) {
+        std::memcpy(written, target, sizeof written);
+        ++g_slide_writes;
+    }
+}
+
+}  // namespace
+
+void puppet_set_slide_fix(bool on) { g_slide_fix = on; }
+
 void puppet_tick() {
+    slide_fix_tick();
     horse_diag_tick();
     {
         static uint64_t timing_at = 0;

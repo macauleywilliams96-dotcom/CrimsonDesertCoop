@@ -12,6 +12,8 @@
 namespace cdmp::game {
 
 bool safe_read(uintptr_t addr, void* out, size_t size);
+// A write to a heap object of the game, with the same checks (writable pages, SEH).
+bool safe_write(uintptr_t addr, const void* in, size_t size);
 
 template <class T>
 std::optional<T> read(uintptr_t addr) {
